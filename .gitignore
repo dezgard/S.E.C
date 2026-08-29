@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+# Local archive, build, and release material never belongs in public source.
+backups/
+builds/
+releases/
+*.exe
+*.sha256
+*.rar
+*.secintel.json
+archive.json
+user_data.json
