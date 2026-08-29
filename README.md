@@ -13,8 +13,8 @@ This source tree is intentionally separate from the private `StarEmpireDataBrows
 - It remains a native desktop application; it does not start a web browser or web server.
 
 The private project is retained unchanged as rollback material. S.E.C. v1.5.5.0
-has been packaged locally; it has not been deployed to a game folder or
-published as a release.
+is published as the public v0.6 release. It has not been deployed to a game
+folder.
 
 ## Run or build locally
 
