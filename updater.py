@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 
 GITHUB_REPOSITORY = "dezgard/S.E.C"
-CURRENT_RELEASE_TAG = "v0.7"
+CURRENT_RELEASE_TAG = "v0.9"
 RELEASE_ASSET_NAME = "StarEmpireCompanion.exe"
 RELEASE_CHECKSUM_NAME = f"{RELEASE_ASSET_NAME}.sha256"
 GITHUB_API_VERSION = "2022-11-28"
@@ -47,7 +47,7 @@ def _release_version(tag: str) -> tuple[int, ...] | None:
 
 
 def is_newer_release(remote_tag: str, current_tag: str = CURRENT_RELEASE_TAG) -> bool:
-    """Compare numeric public release tags such as v0.6 and v0.7."""
+    """Compare numeric public release tags such as v0.8 and v0.9."""
     remote = _release_version(remote_tag)
     current = _release_version(current_tag)
     if remote is None or current is None:
@@ -173,10 +173,24 @@ def schedule_replacement(target: Path, staged_update: Path, parent_pid: int) -> 
     script.write_text(
         "param([string]$Target, [string]$Update, [int]$ParentPid)\n"
         "$ErrorActionPreference = 'Stop'\n"
-        "while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }\n"
-        "Move-Item -LiteralPath $Update -Destination $Target -Force\n"
-        "Start-Process -FilePath $Target\n"
-        "Remove-Item -LiteralPath $PSCommandPath -Force\n",
+        "$FailureLog = \"$Update.failure.log\"\n"
+        "try {\n"
+        "  while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }\n"
+        "  $deadline = [DateTime]::UtcNow.AddSeconds(30)\n"
+        "  while ($true) {\n"
+        "    try {\n"
+        "      Move-Item -LiteralPath $Update -Destination $Target -Force -ErrorAction Stop\n"
+        "      break\n"
+        "    } catch {\n"
+        "      if ([DateTime]::UtcNow -ge $deadline) { throw }\n"
+        "      Start-Sleep -Milliseconds 250\n"
+        "    }\n"
+        "  }\n"
+        "  Start-Process -FilePath $Target -ErrorAction Stop\n"
+        "  Remove-Item -LiteralPath $PSCommandPath -Force\n"
+        "} catch {\n"
+        "  $_ | Out-File -LiteralPath $FailureLog -Encoding utf8\n"
+        "}\n",
         encoding="utf-8",
     )
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
