@@ -32,6 +32,19 @@ class _Response:
 
 
 class UpdaterTests(unittest.TestCase):
+    def test_packaged_executable_path_finds_the_running_renamed_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / "My Star Empire Companion.exe"
+            executable.write_bytes(b"packaged application")
+            with (
+                patch.object(updater.sys, "frozen", True, create=True),
+                patch.object(updater.sys, "executable", str(executable)),
+            ):
+                self.assertEqual(updater.packaged_executable_path(), executable.resolve())
+
+            with patch.object(updater.sys, "frozen", False, create=True):
+                self.assertIsNone(updater.packaged_executable_path())
+
     def test_latest_release_requires_expected_assets_and_compares_tags(self) -> None:
         payload = {
             "tag_name": "v0.12",
@@ -46,8 +59,8 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(release.tag, "v0.12")
         self.assertTrue(updater.is_newer_release(release.tag, "v0.11"))
         self.assertFalse(updater.is_newer_release("v0.11", "v0.11"))
-        self.assertTrue(updater.is_newer_release("v0.13"))
-        self.assertFalse(updater.is_newer_release("v0.12"))
+        self.assertTrue(updater.is_newer_release("v0.15"))
+        self.assertFalse(updater.is_newer_release("v0.14"))
         self.assertFalse(updater.is_newer_release("release-candidate", "v0.11"))
 
     def test_verified_download_requires_release_checksum(self) -> None:
@@ -87,9 +100,9 @@ class UpdaterTests(unittest.TestCase):
                 updater.stage_verified_update(release, Path(folder), opener)
             self.assertEqual(list(Path(folder).iterdir()), [])
 
-    def test_replacement_helper_retries_a_locked_executable_and_records_failure(self) -> None:
+    def test_replacement_helper_uses_verified_rename_swap_rollback_and_uac_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / updater.RELEASE_ASSET_NAME
+            target = Path(folder) / "Renamed Companion.exe"
             target.write_bytes(b"current")
             staged = Path(folder) / "StarEmpireCompanion-v0.12.update.exe"
             staged.write_bytes(b"verified update")
@@ -100,8 +113,19 @@ class UpdaterTests(unittest.TestCase):
             content = script.read_text(encoding="utf-8")
             self.assertIn("[DateTime]::UtcNow.AddSeconds(30)", content)
             self.assertIn("Copy-Item -LiteralPath $Update -Destination $Replacement -Force -ErrorAction Stop", content)
-            self.assertIn("[IO.File]::Replace($Replacement, $Target, $Rollback, $true)", content)
+            self.assertIn("function Get-Sha256", content)
+            self.assertIn("[Security.Cryptography.SHA256]::Create()", content)
+            self.assertIn("if ((Get-Sha256 $Replacement) -ne $ExpectedHash)", content)
+            self.assertIn("[IO.File]::Move($Target, $Rollback)", content)
+            self.assertIn("[IO.File]::Move($Replacement, $Target)", content)
+            self.assertIn("function Restore-Target", content)
             self.assertIn("$Replacement = \"$Target.pending\"", content)
+            self.assertIn("$Rollback = \"$Target.previous.$ParentPid\"", content)
             self.assertIn("Start-Sleep -Milliseconds 250", content)
+            self.assertIn("Test-AccessDenied", content)
+            self.assertIn("-Verb RunAs", content)
+            self.assertIn("-Elevated", content)
             self.assertIn("$Update.failure.log", content)
+            self.assertNotIn("Get-FileHash", content)
+            self.assertNotIn("[IO.File]::Replace", content)
             popen.assert_called_once()

@@ -10,7 +10,6 @@ import os
 import queue
 import re
 import shlex
-import sys
 import textwrap
 import threading
 import tkinter as tk
@@ -4909,12 +4908,7 @@ class StarEmpireDesktop:
             self.patch_button.configure(state="normal")
 
     def _packaged_companion_path(self) -> Path | None:
-        if not getattr(sys, "frozen", False):
-            return None
-        executable = Path(sys.executable).resolve()
-        if executable.name.casefold() != updater.RELEASE_ASSET_NAME.casefold():
-            return None
-        return executable
+        return updater.packaged_executable_path()
 
     def _set_update_button_ready(self) -> None:
         self.update_button.configure(

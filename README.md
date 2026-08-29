@@ -7,8 +7,8 @@ Star Empire Companion is a native Windows desktop archive for player-observed St
 - It may use a **passive, logger-only Game Link** to record data the normal client already receives.
 - It remains a native desktop application; it does not start a web browser or web server.
 
-S.E.C. v1.5.11.0 is published as the public v0.12 atomic-updater test release. It has
-not been deployed to a game folder.
+S.E.C. v1.5.13.0 is published as the public v0.14 updater-reliability release.
+It has not been deployed to a game folder.
 
 ## Run or build locally
 
@@ -25,8 +25,15 @@ The packaged application has a manual **CHECK UPDATE** button. It checks only
 the latest release in `dezgard/S.E.C`; nothing is downloaded automatically.
 When a newer public tag is available, it requires confirmation, downloads the
 release executable and its matching SHA-256 asset, and installs only after the
-checksum and published size match. The current Companion is replaced only after
-it closes, then restarts. Source/Python runs and all game files are excluded.
+checksum and published size match. It finds the actual running executable even
+when the file or containing folder has been renamed. After the Companion closes,
+the verified update is copied beside it, checked again, and renamed into the
+vacant executable path while the previous file is retained for rollback. The
+helper retries temporary locks and then reopens the updated Companion. A UAC
+prompt appears only when Windows denies write access to the install folder; if
+installation cannot complete, the previous executable is restored and reopened
+where possible, and a local failure log is retained. Source/Python runs and all
+game files are excluded.
 
 ## Universal search
 

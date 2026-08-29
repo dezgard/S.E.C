@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -14,7 +16,7 @@ from typing import Any, Callable
 
 
 GITHUB_REPOSITORY = "dezgard/S.E.C"
-CURRENT_RELEASE_TAG = "v0.12"
+CURRENT_RELEASE_TAG = "v0.14"
 RELEASE_ASSET_NAME = "StarEmpireCompanion.exe"
 RELEASE_CHECKSUM_NAME = f"{RELEASE_ASSET_NAME}.sha256"
 GITHUB_API_VERSION = "2022-11-28"
@@ -125,6 +127,19 @@ def update_staging_directory() -> Path:
     return base / "StarEmpireCompanion" / "updates"
 
 
+def packaged_executable_path() -> Path | None:
+    """Return the actual running packaged executable, wherever the user placed it."""
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        executable = Path(sys.executable).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not executable.is_file() or executable.suffix.casefold() != ".exe":
+        return None
+    return executable
+
+
 def stage_verified_update(
     release: CompanionRelease,
     directory: Path | None = None,
@@ -167,44 +182,128 @@ def stage_verified_update(
 
 def schedule_replacement(target: Path, staged_update: Path, parent_pid: int) -> None:
     """Replace a packaged Companion after its running process has exited."""
-    if target.name.casefold() != RELEASE_ASSET_NAME.casefold() or not staged_update.is_file():
+    try:
+        target = target.resolve(strict=True)
+        staged_update = staged_update.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise UpdateError("The selected application update is not valid.") from error
+    if (
+        target.suffix.casefold() != ".exe"
+        or not target.is_file()
+        or not staged_update.is_file()
+        or target == staged_update
+        or parent_pid <= 0
+    ):
         raise UpdateError("The selected application update is not valid.")
+
+    target_encoded = base64.b64encode(str(target).encode("utf-8")).decode("ascii")
+    update_encoded = base64.b64encode(str(staged_update).encode("utf-8")).decode("ascii")
+    digest = hashlib.sha256()
+    with staged_update.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+
     script = staged_update.with_suffix(".apply.ps1")
-    script.write_text(
-        "param([string]$Target, [string]$Update, [int]$ParentPid)\n"
-        "$ErrorActionPreference = 'Stop'\n"
-        "$FailureLog = \"$Update.failure.log\"\n"
-        "$Replacement = \"$Target.pending\"\n"
-        "$Rollback = \"$Target.previous\"\n"
-        "try {\n"
-        "  while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }\n"
-        "  $deadline = [DateTime]::UtcNow.AddSeconds(30)\n"
-        "  while ($true) {\n"
-        "    try {\n"
-        "      Copy-Item -LiteralPath $Update -Destination $Replacement -Force -ErrorAction Stop\n"
-        "      Remove-Item -LiteralPath $Rollback -Force -ErrorAction SilentlyContinue\n"
-        "      [IO.File]::Replace($Replacement, $Target, $Rollback, $true)\n"
-        "      Remove-Item -LiteralPath $Update -Force -ErrorAction SilentlyContinue\n"
-        "      Remove-Item -LiteralPath $Rollback -Force -ErrorAction SilentlyContinue\n"
-        "      break\n"
-        "    } catch {\n"
-        "      if ([DateTime]::UtcNow -ge $deadline) { throw }\n"
-        "      Start-Sleep -Milliseconds 250\n"
-        "    }\n"
-        "  }\n"
-        "  Start-Process -FilePath $Target -ErrorAction Stop\n"
-        "  Remove-Item -LiteralPath $PSCommandPath -Force\n"
-        "} catch {\n"
-        "  $_ | Out-File -LiteralPath $FailureLog -Encoding utf8\n"
-        "}\n",
-        encoding="utf-8",
-    )
+    lines = [
+        "param([switch]$Elevated)",
+        "$ErrorActionPreference = 'Stop'",
+        f"$Target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{target_encoded}'))",
+        f"$Update = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{update_encoded}'))",
+        f"$ParentPid = {parent_pid}",
+        f"$ExpectedHash = '{digest.hexdigest().upper()}'",
+        "$FailureLog = \"$Update.failure.log\"",
+        "$Replacement = \"$Target.pending\"",
+        "$Rollback = \"$Target.previous.$ParentPid\"",
+        "Remove-Item -LiteralPath $FailureLog -Force -ErrorAction SilentlyContinue",
+        "function Restore-Target {",
+        "  if ((Test-Path -LiteralPath $Rollback) -and (-not (Test-Path -LiteralPath $Target))) {",
+        "    [IO.File]::Move($Rollback, $Target)",
+        "  }",
+        "}",
+        "function Test-AccessDenied($Record) {",
+        "  $exception = $Record.Exception",
+        "  while ($null -ne $exception) {",
+        "    if (($exception -is [UnauthorizedAccessException]) -or ($exception.HResult -eq -2147024891)) { return $true }",
+        "    $exception = $exception.InnerException",
+        "  }",
+        "  return $false",
+        "}",
+        "function Get-Sha256([string]$Path) {",
+        "  $stream = [IO.File]::OpenRead($Path)",
+        "  try {",
+        "    $sha = [Security.Cryptography.SHA256]::Create()",
+        "    try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }",
+        "    finally { $sha.Dispose() }",
+        "  } finally {",
+        "    $stream.Dispose()",
+        "  }",
+        "}",
+        "function Install-VerifiedUpdate {",
+        "  Restore-Target",
+        "  $deadline = [DateTime]::UtcNow.AddSeconds(30)",
+        "  while ($true) {",
+        "    try {",
+        "      Restore-Target",
+        "      Copy-Item -LiteralPath $Update -Destination $Replacement -Force -ErrorAction Stop",
+        "      if ((Get-Sha256 $Replacement) -ne $ExpectedHash) {",
+        "        throw 'The prepared update failed its final checksum verification.'",
+        "      }",
+        "      Remove-Item -LiteralPath $Rollback -Force -ErrorAction SilentlyContinue",
+        "      [IO.File]::Move($Target, $Rollback)",
+        "      try {",
+        "        [IO.File]::Move($Replacement, $Target)",
+        "      } catch {",
+        "        Restore-Target",
+        "        throw",
+        "      }",
+        "      Remove-Item -LiteralPath $Update -Force -ErrorAction SilentlyContinue",
+        "      Remove-Item -LiteralPath $Rollback -Force -ErrorAction SilentlyContinue",
+        "      return",
+        "    } catch {",
+        "      $caught = $_",
+        "      try { Restore-Target } catch { $caught = $_ }",
+        "      if ((-not $Elevated) -and (Test-AccessDenied $caught)) { throw $caught }",
+        "      if ([DateTime]::UtcNow -ge $deadline) { throw $caught }",
+        "      Start-Sleep -Milliseconds 250",
+        "    }",
+        "  }",
+        "}",
+        "if (-not $Elevated) {",
+        "  while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }",
+        "}",
+        "try {",
+        "  Install-VerifiedUpdate",
+        "} catch {",
+        "  $failure = $_",
+        "  try { Restore-Target } catch { $failure = $_ }",
+        "  if ((-not $Elevated) -and (Test-AccessDenied $failure)) {",
+        "    try {",
+        "      $argumentLine = '-NoProfile -ExecutionPolicy Bypass -File \"' + $PSCommandPath + '\" -Elevated'",
+        "      Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $argumentLine -Verb RunAs -WindowStyle Hidden -ErrorAction Stop",
+        "      exit 0",
+        "    } catch {",
+        "      $failure = $_",
+        "    }",
+        "  }",
+        "  $failure | Out-File -LiteralPath $FailureLog -Encoding utf8",
+        "  if (Test-Path -LiteralPath $Target) {",
+        "    try { Start-Process -FilePath $Target -WorkingDirectory ([IO.Path]::GetDirectoryName($Target)) -ErrorAction Stop } catch {}",
+        "  }",
+        "  exit 1",
+        "}",
+        "try {",
+        "  Start-Process -FilePath $Target -WorkingDirectory ([IO.Path]::GetDirectoryName($Target)) -ErrorAction Stop",
+        "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+        "} catch {",
+        "  $_ | Out-File -LiteralPath $FailureLog -Encoding utf8",
+        "}",
+    ]
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         subprocess.Popen(
             [
                 "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
-                "-Target", str(target), "-Update", str(staged_update), "-ParentPid", str(parent_pid),
             ],
             creationflags=flags,
         )

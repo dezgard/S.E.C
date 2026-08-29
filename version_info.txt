@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 5, 11, 0),
-    prodvers=(1, 5, 11, 0),
+    filevers=(1, 5, 13, 0),
+    prodvers=(1, 5, 13, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Dezgard'),
           StringStruct('FileDescription', 'Star Empire Companion'),
-          StringStruct('FileVersion', '1.5.11.0'),
+          StringStruct('FileVersion', '1.5.13.0'),
           StringStruct('InternalName', 'StarEmpireCompanion'),
           StringStruct('LegalCopyright', 'Personal local archive tool'),
           StringStruct('OriginalFilename', 'StarEmpireCompanion.exe'),
           StringStruct('ProductName', 'Star Empire Companion'),
-          StringStruct('ProductVersion', '1.5.11.0')
+          StringStruct('ProductVersion', '1.5.13.0')
         ]
       )
     ]),
