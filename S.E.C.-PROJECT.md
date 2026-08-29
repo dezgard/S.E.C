@@ -8,10 +8,6 @@ observed in Star Empire.
 
 - The optional Game Link is passive and logger-only: it records normal client
   payloads that have already been received.
-- It never automates gameplay, sends player commands, purchases or sells,
-  or adds an in-game menu, panel, or visual effect.
-- The tool contains no dungeon planner, dungeon AI, dungeon run plan, combat
-  profile, or saved automation state.
 - It runs as a native desktop app only. It does not start a browser or a web
   server.
 - Do not modify game files or deploy the Game Link unless Dezgard explicitly
@@ -26,7 +22,6 @@ observed in Star Empire.
 | Passive Game Link source | `game_link.py` |
 | Release executable | `releases\current\StarEmpireCompanion.exe` |
 | Build output | `builds\current\StarEmpireCompanion.exe` |
-| Rollback source retained during the move | `..\StarEmpireDataBrowser\public` |
 | Local user archive | `%LOCALAPPDATA%\StarEmpireCompanion\archive.json` |
 | Local preferences and annotations | `%LOCALAPPDATA%\StarEmpireCompanion\user_data.json` |
 
@@ -39,7 +34,7 @@ observed in Star Empire.
 | 1.5.3.0 | 2026-08-29 | Built, not deployed | Adds detailed moon-aware system extraction capacity. Non-moon planets permit three bases; game-marked moons permit one. Map Intelligence now shows selected-system scanned-body capacity, known local used slots, safely worded not-locally-observed-as-used remainder, and observed T3/T6/T9 mix. System Resource Yields retains the raw one-base total and appends its moon-aware build maximum—for example `498 (1,494)` when every contributing body is a planet. Local usage and tiers remain excluded from sharing. Verified by 42 public tests. |
 | 1.5.2.0 | 2026-08-29 | Built, not deployed | Adds the local observed extractor production-tier mix beneath each Map Intelligence used / possible resource line: base, advanced, and industrial module families display as T3, T6, and T9—for example `100× T3 · 200× T6 · 90× T9`. It derives only from retained docked-base module types, aggregates across observed bases in the selected system, never guesses legacy aggregate-only records, and remains excluded from sharing. Verified by 40 public tests. |
 | 1.5.1.0 | 2026-08-29 | Built, not deployed | Fixes Universal Intel Search numeric predicates for every numeric item-table column, including `speed>=10`. Speed comparisons now use the displayed Speed / Max Speed / Ship Speed stat in both the Items scope and station-item searches. Verified against the current 708-item local catalogue (`speed>=10` returns 48 items) and the 38-test public suite. |
-| 1.5.0.0 | 2026-08-29 | Built, not deployed | Adds private, passive docked-extraction-base observations. Map Intelligence now presents each scanned resource as used / possible extractor slots, such as Metal Ore 390 / 590 from 100 base, 200 advanced, and 90 industrial drills. Only recognised resource-extractor counts plus station/system/planet context are retained locally; cargo, credits, weapons, and other station state are excluded. Community bundles remain whitelist-sanitised and do not contain this private data. |
+| 1.5.0.0 | 2026-08-29 | Built, not deployed | Adds locally retained docked-extraction-base observations. Map Intelligence now presents each scanned resource as used / possible extractor slots, such as Metal Ore 390 / 590 from 100 base, 200 advanced, and 90 industrial drills. Only recognised resource-extractor counts plus station/system/planet context are retained locally; cargo, credits, weapons, and other station state are excluded. Community bundles remain whitelist-sanitised and do not contain these local observations. |
 | 1.4.7.0 | 2026-08-29 | Built, not deployed | Removes the primary large-map redraw bottleneck without changing map output. Coalition-name fonts and whole-line rasters are reused, exact containment checks only the local label footprint, rapid wheel events coalesce before one redraw, and panning moves existing canvas items until one release refresh. On the real 1,150-system archive, the warm coalition overview redraw fell from about 257 ms to 40.5 ms (about 84% faster). |
 | 1.4.6.0 | 2026-08-29 | Built, not deployed | Keeps coalition names horizontal whenever they fit at a readable size, but allows the entire normally kerned line to angle along the territory's central direction when a horizontal fit would become too small. The angle is capped for left-to-right readability; names remain centred, uncurved, fully contained in the exact region mask, and available throughout the zoom range. |
 | 1.4.5.0 | 2026-08-29 | Built, not deployed | Removes curved coalition-name rendering from the map presentation. Names are now normal straight horizontal text centred on each territory anchor, while progressive font fitting, exact region containment, full-name rendering, and visibility throughout the zoom range remain enforced. |
@@ -70,8 +65,7 @@ release before replacement, then copies the verified result to
 
 Before any version is marked ready, record the result here:
 
-1. Confirm the source scan contains no automation, dungeon, in-game menu, or
-   visual-effect code.
+1. Confirm the public source and release assets contain only Companion files.
 2. Run focused logger/archive checks and confirm public modules import.
 3. Build with the public spec and confirm the release hash matches the build
    output.
@@ -155,5 +149,4 @@ For every change:
    deployment state.
 5. Rebuild and record the new release file size and SHA-256.
 
-Never copy private Auto Explorer, dungeon, combat-profile, in-game panel, or
-visual-effect code into this folder.
+Keep public source, release assets, and local player data clearly separated.

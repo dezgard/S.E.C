@@ -4,17 +4,11 @@ Star Empire Companion is a native Windows desktop archive for player-observed St
 
 ## Public boundary
 
-This source tree is intentionally separate from the private `StarEmpireDataBrowser` project next to it.
-
 - It may use a **passive, logger-only Game Link** to record data the normal client already receives.
-- It must never automate gameplay, send player commands, or create an in-game control panel.
-- It contains no dungeon planner, dungeon runner, dungeon AI view, combat profile, or saved dungeon plan.
-- It contains no in-game visual effects, including damage numbers, shield effects, turret overlays, or hardpoint displays.
 - It remains a native desktop application; it does not start a web browser or web server.
 
-The private project is retained unchanged as rollback material. S.E.C. v1.5.5.0
-is published as the public v0.6 release. It has not been deployed to a game
-folder.
+S.E.C. v1.5.5.0 is published as the public v0.6 release. It has not been
+deployed to a game folder.
 
 ## Run or build locally
 
@@ -76,6 +70,6 @@ The system-yield table keeps the one-base aggregate first and places its
 moon-aware maximum in parentheses—for example `Metal Ore: 498 (1,494)` when
 all contributing bodies are planets. “Not locally observed as used” is not a
 claim that a slot is empty: used counts and tiers include only bases the player
-has docked at. Those private observations are stored locally and never enter a
+has docked at. Those local observations are stored locally and never enter a
 shared `.secintel.json` bundle; older aggregate-only records remain totals-only
 rather than having tiers guessed from their count.
