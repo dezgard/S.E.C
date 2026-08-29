@@ -29,6 +29,7 @@ observed in Star Empire.
 
 | Version | Date | Status | Notes |
 | --- | --- | --- | --- |
+| 1.5.9.0 | 2026-08-29 | Published as v0.10 | Updater test release for a v0.9 installation. The verified v0.10 download uses the same replacement retry path, then reopens as the current version. Verified by 46 public tests, including the executable-lock retry check. |
 | 1.5.8.0 | 2026-08-29 | Published as v0.9 | Updater-retry test release. After the app closes, the replacement helper waits up to 30 seconds for the executable to become replaceable, retrying every 250 ms before reopening the updated Companion. If it cannot finish, it leaves a local failure log beside the staged update. Verified by 46 public tests and a two-process executable-lock check. |
 | 1.5.6.0 | 2026-08-29 | Published as v0.7 | Updater-test release. A v0.6 installation detects v0.7 as newer, verifies the release executable against its SHA-256 asset before staging, replaces it after exit, and then recognises v0.7 as current after restart. Verified by 45 public tests. |
 | 1.5.5.0 | 2026-08-29 | Published as v0.6 | Adds a manual Companion updater. CHECK UPDATE reads only the latest `dezgard/S.E.C` GitHub release, requires both `StarEmpireCompanion.exe` and its SHA-256 asset, validates size and hash before staging, then replaces the packaged Companion after exit and restarts it. It never runs for source/Python launches, downloads nothing without confirmation, and never touches game files. The build now produces the required `.sha256` asset. Verified by 45 public tests. |
@@ -50,13 +51,13 @@ observed in Star Empire.
 | 1.1.0.0 | 2026-08-29 | Built, not deployed | Adds opt-in `.secintel.json` community intel export/import. No automatic upload or server. Export excludes player, ship, inventory, local notes, and personal station status. |
 | 1.0.0.0 | 2026-08-29 | Built, not deployed | First S.E.C. public desktop build. Passive logger-only Game Link; no game-folder copy has been made. |
 
-Current built release verification (v1.5.8.0):
+Current built release verification (v1.5.9.0):
 
 - File: `releases\current\StarEmpireCompanion.exe`
-- Size: 23,953,688 bytes
-- SHA-256: `AE000FD324DF080D6B62F206992D08A754E2C783C6B1629249D55AF011355561`
+- Size: 23,954,003 bytes
+- SHA-256: `06A1702B10BA7A15F33827B520ED79BB2AFFE66A837D11C3E9572C259B7CEA4A`
 - Checksum asset: `StarEmpireCompanion.exe.sha256` (same SHA-256)
-- Windows product/file version: `1.5.8.0`
+- Windows product/file version: `1.5.9.0`
 
 ## Build and verification
 

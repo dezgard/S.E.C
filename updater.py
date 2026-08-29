@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 
 GITHUB_REPOSITORY = "dezgard/S.E.C"
-CURRENT_RELEASE_TAG = "v0.9"
+CURRENT_RELEASE_TAG = "v0.10"
 RELEASE_ASSET_NAME = "StarEmpireCompanion.exe"
 RELEASE_CHECKSUM_NAME = f"{RELEASE_ASSET_NAME}.sha256"
 GITHUB_API_VERSION = "2022-11-28"
@@ -47,7 +47,7 @@ def _release_version(tag: str) -> tuple[int, ...] | None:
 
 
 def is_newer_release(remote_tag: str, current_tag: str = CURRENT_RELEASE_TAG) -> bool:
-    """Compare numeric public release tags such as v0.8 and v0.9."""
+    """Compare numeric public release tags such as v0.9 and v0.10."""
     remote = _release_version(remote_tag)
     current = _release_version(current_tag)
     if remote is None or current is None:
