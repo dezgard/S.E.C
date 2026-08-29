@@ -29,6 +29,7 @@ observed in Star Empire.
 
 | Version | Date | Status | Notes |
 | --- | --- | --- | --- |
+| 1.5.6.0 | 2026-08-29 | Published as v0.7 | Updater-test release. A v0.6 installation detects v0.7 as newer, verifies the release executable against its SHA-256 asset before staging, replaces it after exit, and then recognises v0.7 as current after restart. Verified by 45 public tests. |
 | 1.5.5.0 | 2026-08-29 | Published as v0.6 | Adds a manual Companion updater. CHECK UPDATE reads only the latest `dezgard/S.E.C` GitHub release, requires both `StarEmpireCompanion.exe` and its SHA-256 asset, validates size and hash before staging, then replaces the packaged Companion after exit and restarts it. It never runs for source/Python launches, downloads nothing without confirmation, and never touches game files. The build now produces the required `.sha256` asset. Verified by 45 public tests. |
 | 1.5.4.0 | 2026-08-29 | Built, not deployed | Makes the draggable Map Intelligence detail panel resizable from its bottom-right corner. Its size stays within the map, is saved locally with the map view, and RESET PANELS returns it to the default. Verified by 42 public tests. |
 | 1.5.3.0 | 2026-08-29 | Built, not deployed | Adds detailed moon-aware system extraction capacity. Non-moon planets permit three bases; game-marked moons permit one. Map Intelligence now shows selected-system scanned-body capacity, known local used slots, safely worded not-locally-observed-as-used remainder, and observed T3/T6/T9 mix. System Resource Yields retains the raw one-base total and appends its moon-aware build maximum—for example `498 (1,494)` when every contributing body is a planet. Local usage and tiers remain excluded from sharing. Verified by 42 public tests. |
@@ -48,13 +49,13 @@ observed in Star Empire.
 | 1.1.0.0 | 2026-08-29 | Built, not deployed | Adds opt-in `.secintel.json` community intel export/import. No automatic upload or server. Export excludes player, ship, inventory, local notes, and personal station status. |
 | 1.0.0.0 | 2026-08-29 | Built, not deployed | First S.E.C. public desktop build. Passive logger-only Game Link; no game-folder copy has been made. |
 
-Current built release verification (v1.5.5.0):
+Current built release verification (v1.5.6.0):
 
 - File: `releases\current\StarEmpireCompanion.exe`
-- Size: 23,952,339 bytes
-- SHA-256: `BB9E330D89D414401E2324DD8ADB171DD16D79DBE32EC9D45CB25C0F36E9978E`
+- Size: 23,954,258 bytes
+- SHA-256: `7C5BF3D7167FA5C98926E9828515F69FB2CD95648EF037CAD7085CEAD5D32B7A`
 - Checksum asset: `StarEmpireCompanion.exe.sha256` (same SHA-256)
-- Windows product/file version: `1.5.5.0`
+- Windows product/file version: `1.5.6.0`
 
 ## Build and verification
 

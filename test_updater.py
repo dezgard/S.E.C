@@ -45,6 +45,8 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(release.tag, "v0.7")
         self.assertTrue(updater.is_newer_release(release.tag, "v0.6"))
         self.assertFalse(updater.is_newer_release("v0.6", "v0.6"))
+        self.assertTrue(updater.is_newer_release("v0.8"))
+        self.assertFalse(updater.is_newer_release("v0.7"))
         self.assertFalse(updater.is_newer_release("release-candidate", "v0.6"))
 
     def test_verified_download_requires_release_checksum(self) -> None:
