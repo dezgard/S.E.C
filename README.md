@@ -7,7 +7,7 @@ Star Empire Companion is a native Windows desktop archive for player-observed St
 - It may use a **passive, logger-only Game Link** to record data the normal client already receives.
 - It remains a native desktop application; it does not start a web browser or web server.
 
-S.E.C. v1.5.9.0 is published as the public v0.10 updater test release. It has
+S.E.C. v1.5.11.0 is published as the public v0.12 atomic-updater test release. It has
 not been deployed to a game folder.
 
 ## Run or build locally
