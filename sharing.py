@@ -37,6 +37,7 @@ STATION_FIELDS = (
 )
 SCAN_FIELDS = (
     "ok", "planet_id", "planet_name", "planet_type", "system_name",
+    "is_moon", "isScanned",
     "resources", "extractors", "colonization", "scan_range", "scan_radius",
     "orbital_period", "gravity", "atmosphere", "temperature", "water",
     "observedAt",
@@ -90,6 +91,17 @@ def _scan(record: Any) -> dict[str, Any]:
     scan = _fields(record, SCAN_FIELDS)
     if not scan.get("planet_id") and not scan.get("planet_name"):
         return {}
+    # An entry roster may identify a body, but contains no scan result. Keep
+    # that distinction trustworthy even when importing a manually edited file.
+    scanned = bool(scan.get("isScanned")) if "isScanned" in scan else scan.get("ok") is not False
+    scan["isScanned"] = scanned
+    if not scanned:
+        for field in (
+            "resources", "extractors", "colonization", "scan_range",
+            "scan_radius", "orbital_period", "gravity", "atmosphere",
+            "temperature", "water", "ok",
+        ):
+            scan.pop(field, None)
     return scan
 
 

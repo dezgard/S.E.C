@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import threading
 import uuid
@@ -196,6 +197,80 @@ def _merge_private_extractor_usage(previous: list[Any], current: list[Any]) -> l
     )
 
 
+def _merge_private_colony_economy(previous: list[Any], current: list[Any]) -> list[dict[str, Any]]:
+    """Keep the newest passive Colony-tab basket for each observed base."""
+    merged: dict[str, dict[str, Any]] = {}
+    for raw_record in [*previous, *current]:
+        if not isinstance(raw_record, dict):
+            continue
+        station_id = _record_key(raw_record, "stationId")
+        system_name = str(raw_record.get("systemName") or "").strip()
+        try:
+            tick_seconds = float(raw_record.get("tickIntervalSeconds"))
+        except (TypeError, ValueError):
+            continue
+        raw_basket = raw_record.get("basket")
+        if not station_id or not system_name or not math.isfinite(tick_seconds) or tick_seconds <= 0 or not isinstance(raw_basket, list):
+            continue
+        basket: list[dict[str, float | str]] = []
+        seen_resources: set[str] = set()
+        for raw_entry in raw_basket:
+            if not isinstance(raw_entry, dict):
+                continue
+            resource = str(raw_entry.get("resource") or "").strip()
+            try:
+                per_capita = float(raw_entry.get("perCapita", raw_entry.get("per_capita")))
+            except (TypeError, ValueError):
+                continue
+            if not resource or resource in seen_resources or not math.isfinite(per_capita) or per_capita <= 0:
+                continue
+            basket.append({"resource": resource, "perCapita": per_capita})
+            seen_resources.add(resource)
+        if not basket:
+            continue
+        incoming: dict[str, Any] = {
+            "stationId": station_id,
+            "systemName": system_name,
+            "tickIntervalSeconds": tick_seconds,
+            "basket": basket,
+            "observedAt": str(raw_record.get("observedAt") or "") or None,
+        }
+        for field in ("stationName", "planetId", "planetName"):
+            value = str(raw_record.get(field) or "").strip()
+            if value:
+                incoming[field] = value
+        try:
+            population = float(raw_record.get("population"))
+        except (TypeError, ValueError):
+            population = None
+        if population is not None and math.isfinite(population) and population >= 0:
+            incoming["population"] = population
+        existing = merged.get(station_id)
+        if existing is None:
+            merged[station_id] = incoming
+            continue
+        winner = _newer(existing, incoming, "observedAt")
+        combined = copy.deepcopy(winner)
+        for field in ("stationName", "planetId", "planetName", "population"):
+            if combined.get(field) in (None, ""):
+                combined[field] = existing.get(field) if existing.get(field) not in (None, "") else incoming.get(field)
+        merged[station_id] = combined
+    return sorted(
+        merged.values(),
+        key=lambda record: (
+            str(record.get("systemName") or "").casefold(),
+            str(record.get("stationId") or ""),
+        ),
+    )
+
+def _is_completed_scan(record: dict[str, Any]) -> bool:
+    """Whether a body row came from a real scanner reply rather than entry data."""
+    if "isScanned" in record:
+        return bool(record.get("isScanned"))
+    # Archives written before roster support contain only real scan rows.
+    return record.get("ok") is not False
+
+
 def _merge_scans(previous: list[Any], current: list[Any]) -> list[dict[str, Any]]:
     scans: dict[str, dict[str, Any]] = {}
     for raw_scan in [*previous, *current]:
@@ -209,9 +284,24 @@ def _merge_scans(previous: list[Any], current: list[Any]) -> list[dict[str, Any]
         if existing is None:
             scans[scan_id] = incoming
             continue
-        winner = copy.deepcopy(_newer(existing, incoming, "observedAt"))
+        existing_scanned = _is_completed_scan(existing)
+        incoming_scanned = _is_completed_scan(incoming)
+        # A later system entry only confirms that the body still exists. It
+        # must never erase its earlier real scan results or turn it back into
+        # an unscanned row after a shared archive import.
+        if existing_scanned != incoming_scanned:
+            winner = copy.deepcopy(incoming if incoming_scanned else existing)
+        else:
+            winner = copy.deepcopy(_newer(existing, incoming, "observedAt"))
         if not winner.get("system_name"):
             winner["system_name"] = existing.get("system_name") or incoming.get("system_name")
+        if not winner.get("planet_name"):
+            winner["planet_name"] = existing.get("planet_name") or incoming.get("planet_name")
+        if not winner.get("planet_type"):
+            winner["planet_type"] = existing.get("planet_type") or incoming.get("planet_type")
+        if "is_moon" not in winner:
+            winner["is_moon"] = bool(existing.get("is_moon") or incoming.get("is_moon"))
+        winner["isScanned"] = existing_scanned or incoming_scanned
         scans[scan_id] = winner
     return sorted(scans.values(), key=lambda scan: str(scan.get("planet_name") or "").casefold())
 
@@ -443,6 +533,10 @@ def merge_catalog(
             previous.get("privateExtractorUsage") or [],
             current.get("privateExtractorUsage") or [],
         )
+        merged["privateColonyEconomy"] = _merge_private_colony_economy(
+            previous.get("privateColonyEconomy") or [],
+            current.get("privateColonyEconomy") or [],
+        )
         for section in ("player", "ship"):
             if not (merged.get(section) or {}).get("hasData") and (previous.get(section) or {}).get("hasData"):
                 merged[section] = copy.deepcopy(previous[section])
@@ -461,6 +555,10 @@ def merge_catalog(
     merged["privateExtractorUsage"] = _merge_private_extractor_usage(
         (previous or {}).get("privateExtractorUsage") or [],
         merged.get("privateExtractorUsage") or [],
+    )
+    merged["privateColonyEconomy"] = _merge_private_colony_economy(
+        (previous or {}).get("privateColonyEconomy") or [],
+        merged.get("privateColonyEconomy") or [],
     )
 
     items = merged.get("items") or []
@@ -509,6 +607,7 @@ def merge_catalog(
             "stationCount": len(stations),
             "scanCount": len(scans),
             "extractorStationCount": len(merged["privateExtractorUsage"]),
+            "colonyEconomyStationCount": len(merged["privateColonyEconomy"]),
             "trainingOfferCount": merged["training"]["offerCount"],
             "trainingSkillCount": merged["training"]["skillCount"],
             "mapSystemCount": galaxy.get("systemCount", 0),

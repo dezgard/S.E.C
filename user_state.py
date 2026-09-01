@@ -24,7 +24,7 @@ def scan_annotation_key(scan: dict[str, Any]) -> str:
 
 
 def _empty_state() -> dict[str, Any]:
-    return {"version": STATE_VERSION, "settings": {}, "scanAnnotations": {}, "tableLayouts": {}, "recordAnnotations": {}, "savedFittings": {}, "mapView": {}, "savedSearches": {}}
+    return {"version": STATE_VERSION, "settings": {}, "scanAnnotations": {}, "tableLayouts": {}, "recordAnnotations": {}, "savedFittings": {}, "mapView": {}, "savedSearches": {}, "extractionSystems": []}
 
 
 def _clean_settings(value: Any) -> dict[str, str]:
@@ -223,6 +223,20 @@ def _clean_map_view(value: Any) -> dict[str, Any]:
     }
 
 
+def _clean_extraction_systems(value: Any) -> list[str]:
+    """Keep an ordered, local-only list of systems saved for extraction review."""
+    rows = value if isinstance(value, list) else []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw_name in rows[:512]:
+        name = str(raw_name or "").replace("\r", " ").replace("\n", " ").strip()[:160]
+        folded = name.casefold()
+        if name and folded not in seen:
+            seen.add(folded)
+            cleaned.append(name)
+    return cleaned
+
+
 def _clean_saved_search(value: Any) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     return {
@@ -281,6 +295,7 @@ class UserStateStore:
                 if str(key).strip()
             } if isinstance(searches, dict) else {}
             settings = _clean_settings(payload.get("settings") if isinstance(payload, dict) else None)
+            extraction_systems = _clean_extraction_systems(payload.get("extractionSystems") if isinstance(payload, dict) else None)
             self._state = {
                 "version": STATE_VERSION,
                 "settings": settings,
@@ -290,6 +305,7 @@ class UserStateStore:
                 "savedFittings": cleaned_fittings,
                 "mapView": map_view,
                 "savedSearches": cleaned_searches,
+                "extractionSystems": extraction_systems,
             }
             return self._state
 
@@ -497,6 +513,38 @@ class UserStateStore:
             "overlayPositions": {key: list(value) for key, value in view["overlayPositions"].items()},
             "overlaySizes": {key: list(value) for key, value in view["overlaySizes"].items()},
         }
+
+    def extraction_systems(self) -> list[str]:
+        with self._lock:
+            return list(_clean_extraction_systems(self.load().get("extractionSystems")))
+
+    def add_extraction_system(self, system_name: str) -> bool:
+        names = _clean_extraction_systems([system_name])
+        if not names:
+            return False
+        name = names[0]
+        with self._lock:
+            state = self.load()
+            current = _clean_extraction_systems(state.get("extractionSystems"))
+            if any(existing.casefold() == name.casefold() for existing in current):
+                return False
+            state["extractionSystems"] = [*current, name]
+            self._write_atomic(state)
+        return True
+
+    def remove_extraction_system(self, system_name: str) -> bool:
+        target = str(system_name or "").strip().casefold()
+        if not target:
+            return False
+        with self._lock:
+            state = self.load()
+            current = _clean_extraction_systems(state.get("extractionSystems"))
+            updated = [name for name in current if name.casefold() != target]
+            if len(updated) == len(current):
+                return False
+            state["extractionSystems"] = updated
+            self._write_atomic(state)
+        return True
 
     def saved_searches(self) -> list[dict[str, Any]]:
         with self._lock:

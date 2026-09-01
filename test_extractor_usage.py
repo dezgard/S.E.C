@@ -165,6 +165,250 @@ class ExtractorUsageTests(unittest.TestCase):
         )
         self.assertEqual(merged[0]["stationName"], "Metal Base")
 
+    def test_observed_module_production_calculates_the_server_tick_output(self) -> None:
+        record = app._normalise_extractor_snapshot(
+            {
+                "station_id": "metal-base",
+                "system_name": "Peacock Station",
+                "equipped_module_counts": {
+                    "metal_drill": 100,
+                    "advanced_metal_drill": 200,
+                    "industrial_metal_drill": 90,
+                },
+            }
+        )
+        assert record is not None
+        output = app.extractor_record_output_per_tick(
+            record,
+            [
+                {"type": "metal_drill", "stats": {"Production": "8,640/day"}},
+                {"type": "advanced_metal_drill", "stats": {"Production": "17,280/day"}},
+                {"type": "industrial_metal_drill", "stats": {"Production": "25,920/day"}},
+            ],
+            7_200,
+        )
+
+        self.assertEqual(output, {"metal_ore": 554_400.0})
+
+    def test_equipped_production_counts_extractors_processors_inputs_and_credits(self) -> None:
+        record = app._normalise_extractor_snapshot(
+            {
+                "station_id": "industrial-base",
+                "system_name": "Peacock Station",
+                "equipped_module_counts": {
+                    "metal_drill": 100,
+                    "metal_foundry": 10,
+                    "ration_processor": 2,
+                    "station_shield_mk1": 1,
+                },
+            }
+        )
+        assert record is not None
+        self.assertEqual(record["moduleCounts"], {"metal_drill": 100, "metal_foundry": 10, "ration_processor": 2})
+        self.assertEqual(record["resourceSlots"], {"metal_ore": 100})
+        production = app.equipped_module_production_per_tick(
+            record,
+            [
+                {"type": "metal_drill", "stats": {"Production": "8,640/day (Metal Ore)"}},
+                {"type": "metal_foundry", "stats": {"Cycle Input": "1 Metal Ore", "Cycle Output": "1 Metal", "Cycle Time": "12 seconds"}},
+                {"type": "ration_processor", "stats": {"Cycle Input": "2 Space Corn + 5 Credits", "Cycle Output": "1 Ration", "Cycle Time": "12 seconds"}},
+            ],
+            7_200,
+        )
+
+        self.assertEqual(production["outputs"], {"metal_ore": 72_000.0, "metal": 6_000.0, "rations": 1_200.0})
+        self.assertEqual(production["inputs"], {"metal_ore": 6_000.0, "space_corn": 2_400.0})
+        self.assertEqual(production["credits"], {"credits": 6_000.0})
+
+    def test_colony_support_uses_the_limiting_server_basket_resource(self) -> None:
+        basket = [
+            {"resource": "metal_ore", "perCapita": 2},
+            {"resource": "silicon", "perCapita": 5},
+        ]
+        estimate = app.colony_baseline_support_estimate(
+            {"metal_ore": 554_400, "silicon": 7_200},
+            basket,
+        )
+
+        self.assertEqual(estimate["supportedPopulation"], 1_440)
+        self.assertEqual(estimate["limitingResources"], ["silicon"])
+        self.assertEqual(estimate["missingResources"], [])
+        incomplete = app.colony_baseline_support_estimate({"metal_ore": 554_400}, basket)
+        self.assertIsNone(incomplete["supportedPopulation"])
+        self.assertEqual(incomplete["missingResources"], ["silicon"])
+
+    def test_ration_processor_projection_uses_logged_recipe_and_colony_demand(self) -> None:
+        projection = app.ration_projection(
+            75_600,
+            7_200,
+            [{
+                "type": "ration_processor",
+                "stats": {
+                    "Cycle Input": "2 Space Corn + 5 Credits",
+                    "Cycle Output": "1 Ration",
+                    "Cycle Time": "12 seconds",
+                },
+            }],
+            0.1,
+        )
+
+        self.assertEqual(projection["rationsPerTick"], 37_800.0)
+        self.assertEqual(projection["processorsRequired"], 63)
+        self.assertEqual(projection["creditsPerTick"], 189_000.0)
+        self.assertEqual(projection["sustainablePopulation"], 378_000)
+
+    def test_galaxy_projection_combines_body_capacity_current_tiers_and_ration_chain(self) -> None:
+        extractor = app._normalise_extractor_snapshot(
+            {
+                "station_id": "terra-base",
+                "station_name": "Terra Base",
+                "system_name": "Cornworld",
+                "planet_id": "terra-body",
+                "equipped_module_counts": {"harvester": 1, "advanced_harvester": 1},
+            }
+        )
+        assert extractor is not None
+        projection = launcher.galaxy_extraction_projection(
+            [
+                {"system_name": "Cornworld", "planet_id": "terra-body", "planet_name": "Terra", "planet_type": "Terra", "extractors": {"space_corn": 10}},
+                {"system_name": "Cornworld", "planet_id": "moon-body", "planet_name": "Moon", "planet_type": "Moon", "extractors": {"space_corn": 5}},
+            ],
+            [extractor],
+            [{"stationId": "terra-base", "tickIntervalSeconds": 7_200, "basket": [{"resource": "rations", "perCapita": 0.1}]}],
+            [
+                {"type": "harvester", "stats": {"Production": "8,640/day (Space Corn)"}},
+                {"type": "advanced_harvester", "stats": {"Production": "17,280/day (Space Corn)"}},
+                {"type": "industrial_harvester", "stats": {"Production": "25,920/day (Space Corn)"}},
+                {"type": "ration_processor", "stats": {"Cycle Input": "2 Space Corn + 5 Credits", "Cycle Output": "1 Ration", "Cycle Time": "12 seconds"}},
+            ],
+        )
+
+        terra = next(row for row in projection["rows"] if row["bodyName"] == "Terra" and row["resource"] == "space_corn")
+        self.assertEqual(terra["currentSlots"], 2)
+        self.assertEqual(terra["tierSummary"], "1× T3  ·  1× T6")
+        self.assertEqual(terra["currentPerTick"], 2_160.0)
+        self.assertEqual(terra["maxSlots"], 30.0)
+        self.assertEqual(terra["maxTier"], 9)
+        self.assertEqual(terra["maxPerTick"], 64_800.0)
+        self.assertEqual(projection["maximumByResource"], {"space_corn": 75_600.0})
+        self.assertEqual(projection["ration"]["sustainablePopulation"], 378_000)
+
+    def test_latest_private_colony_economy_snapshot_survives_log_rotation(self) -> None:
+        previous = [{
+            "stationId": "metal-base",
+            "systemName": "Peacock Station",
+            "tickIntervalSeconds": 7_200,
+            "basket": [{"resource": "metal_ore", "perCapita": 2}],
+            "observedAt": "2026-08-29 10:00:00",
+        }]
+        current = [{
+            "stationId": "metal-base",
+            "stationName": "Metal Base",
+            "systemName": "Peacock Station",
+            "tickIntervalSeconds": 7_200,
+            "population": 1_200,
+            "basket": [{"resource": "metal_ore", "perCapita": 2}],
+            "observedAt": "2026-08-29 11:00:00",
+        }]
+
+        merged = archive_store._merge_private_colony_economy(previous, current)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["stationName"], "Metal Base")
+        self.assertEqual(merged[0]["population"], 1_200.0)
+    def test_colony_panel_entries_use_server_tick_and_limiting_resource(self) -> None:
+        extractor = app._normalise_extractor_snapshot(
+            {
+                "station_id": "metal-base",
+                "station_name": "Metal Base",
+                "system_name": "Peacock Station",
+                "equipped_module_counts": {"metal_drill": 100},
+            }
+        )
+        assert extractor is not None
+        entries = launcher.colony_economy_entries(
+            [extractor],
+            [{
+                "stationId": "metal-base",
+                "systemName": "Peacock Station",
+                "tickIntervalSeconds": 7_200,
+                "population": 700,
+                "basket": [{"resource": "metal_ore", "perCapita": 2}],
+            }],
+            [{"type": "metal_drill", "stats": {"Production": "8,640/day"}}],
+        )
+
+        self.assertEqual(entries[0]["outputEntries"], [("metal_ore", 72_000.0)])
+        self.assertEqual(entries[0]["estimate"]["supportedPopulation"], 36_000)
+        widget = _TextCapture()
+        desktop = object.__new__(launcher.StarEmpireDesktop)
+        desktop._insert_colony_economy_entries(widget, entries)
+        self.assertIn("Metal Ore 72,000 / tick", widget.text)
+        self.assertIn("36,000 population", widget.text)
+        self.assertIn("ESTIMATED HEADROOM: 35,300", widget.text)
+
+    def test_extractor_output_uses_the_observed_global_tick_without_local_colony_data(self) -> None:
+        extractor = app._normalise_extractor_snapshot(
+            {
+                "station_id": "mats-1",
+                "station_name": "MATS1",
+                "system_name": "Mjolnir Hollows",
+                "equipped_module_counts": {"metal_drill": 150, "silicon_drill": 84},
+            }
+        )
+        assert extractor is not None
+        entries = launcher.colony_economy_entries(
+            [extractor],
+            [{"stationId": "other-base", "tickIntervalSeconds": 7_200, "basket": [{"resource": "rations", "perCapita": 0.1}]}],
+            [
+                {"type": "metal_drill", "stats": {"Production": "8,640/day (Metal Ore)"}},
+                {"type": "silicon_drill", "stats": {"Production": "8,640/day (Silicon)"}},
+            ],
+        )
+
+        self.assertFalse(entries[0]["hasColonyData"])
+        self.assertTrue(entries[0]["usesSharedTick"])
+        self.assertEqual(entries[0]["outputEntries"], [("metal_ore", 108_000.0), ("silicon", 60_480.0)])
+        widget = _TextCapture()
+        desktop = object.__new__(launcher.StarEmpireDesktop)
+        desktop._insert_colony_economy_entries(widget, entries)
+        self.assertIn("LAST OBSERVED SERVER TICK: 2h 0m", widget.text)
+        self.assertIn("Metal Ore 108,000 / tick", widget.text)
+        self.assertIn("Silicon 60,480 / tick", widget.text)
+        self.assertIn("support and population estimate", widget.text)
+
+    def test_body_entries_keep_every_body_and_attach_named_base_output(self) -> None:
+        record = app._normalise_extractor_snapshot(
+            {
+                "station_id": "base-1",
+                "station_name": "Corn&Wood1",
+                "system_name": "Mjolnir Hollows",
+                "planet_id": "planet-1",
+                "planet_name": "Belxayn",
+                "equipped_module_counts": {"harvester": 10},
+            }
+        )
+        assert record is not None
+        entries = launcher.system_body_extraction_entries(
+            [
+                {"system_name": "Mjolnir Hollows", "planet_id": "planet-1", "planet_name": "Belxayn", "planet_type": "Terra", "isScanned": True, "extractors": {"space_corn": 40}},
+                {"system_name": "Mjolnir Hollows", "planet_id": "moon-1", "planet_name": "Belxayn Moon", "planet_type": "Moon", "is_moon": True, "isScanned": False},
+            ],
+            [record],
+            [{"stationId": "tick-source", "tickIntervalSeconds": 7_200, "basket": [{"resource": "rations", "perCapita": 0.1}]}],
+            [{"type": "harvester", "stats": {"Production": "8,640/day (Space Corn)"}}],
+            "Mjolnir Hollows",
+        )
+        self.assertEqual([entry["bodyName"] for entry in entries], ["Belxayn", "Belxayn Moon"])
+        self.assertTrue(entries[0]["scanned"])
+        self.assertFalse(entries[1]["scanned"])
+        self.assertEqual(entries[0]["maxBases"], 3)
+        self.assertEqual(entries[1]["maxBases"], 1)
+        station = entries[0]["stations"][0]
+        self.assertEqual(station["stationName"], "Corn&Wood1")
+        self.assertEqual(station["outputEntries"], [("space_corn", 7_200.0)])
+        self.assertEqual(entries[1]["stations"], [])
+
     def test_private_extractor_usage_cannot_enter_shared_intel(self) -> None:
         clean = sharing.sanitise_catalog(
             {
@@ -173,11 +417,18 @@ class ExtractorUsageTests(unittest.TestCase):
                     "systemName": "Peacock Station",
                     "resourceSlots": {"metal_ore": 390},
                 }],
+                "privateColonyEconomy": [{
+                    "stationId": "metal-base",
+                    "systemName": "Peacock Station",
+                    "tickIntervalSeconds": 7200,
+                    "basket": [{"resource": "metal_ore", "perCapita": 2}],
+                }],
                 "map": {},
             }
         )
 
         self.assertNotIn("privateExtractorUsage", clean)
+        self.assertNotIn("privateColonyEconomy", clean)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -86,7 +87,19 @@ def configure_game_root(
 SHOP_MARKER = "SHOP_CATALOG "
 TRAINING_MARKER = "TRAINING_CATALOG "
 SCAN_MARKER = "PLANET_SCAN_RESULT "
+SYSTEM_BODY_ROSTER_MARKER = "SYSTEM_BODY_ROSTER "
 STATION_EXTRACTOR_MARKER = "STATION_EXTRACTOR_SNAPSHOT "
+COLONY_ECONOMY_MARKER = "COLONY_ECONOMY_SNAPSHOT "
+PRODUCTION_PER_DAY_RE = re.compile(r"(?P<amount>\d[\d,]*(?:\.\d+)?)\s*/\s*day\b", re.IGNORECASE)
+RATION_PROCESSOR_TYPE = "ration_processor"
+RATION_PROCESSOR_CYCLE_PART_RE = re.compile(
+    r"^\s*(?P<amount>[\d,]+(?:\.\d+)?)\s+(?P<resource>[A-Za-z][A-Za-z _-]*)\s*$",
+)
+RATION_PROCESSOR_CYCLE_SECONDS_RE = re.compile(
+    r"(?P<seconds>[\d,]+(?:\.\d+)?)\s*seconds?",
+    re.IGNORECASE,
+)
+SECONDS_PER_DAY = 86_400
 SNAPSHOT_MARKERS = {
     "GALAXY_STATIC_SNAPSHOT ": "galaxyStatic",
     "GALAXY_MAP_SNAPSHOT ": "galaxyMap",
@@ -146,6 +159,13 @@ EXTRACTOR_TIER_BY_MODULE = {
     "advanced_harvester": 6,
     "industrial_harvester": 9,
 }
+PROCESSOR_MODULE_TYPES = frozenset({
+    "furniture_factory",
+    "metal_foundry",
+    "microchip_fabricator",
+    "ration_processor",
+})
+PRODUCTION_MODULE_TYPES = frozenset({*EXTRACTOR_RESOURCE_BY_MODULE, *PROCESSOR_MODULE_TYPES})
 SAFE_ASSET_FOLDERS = {
     "Ships",
     "Drones",
@@ -242,8 +262,7 @@ def _normalise_extractor_snapshot(record: Any) -> dict[str, Any] | None:
     resource_slots: dict[str, int] = {}
     for raw_type, raw_quantity in raw_counts.items():
         module_type = str(raw_type or "").strip()
-        resource = EXTRACTOR_RESOURCE_BY_MODULE.get(module_type)
-        if not resource:
+        if module_type not in PRODUCTION_MODULE_TYPES:
             continue
         try:
             quantity = int(raw_quantity)
@@ -252,8 +271,10 @@ def _normalise_extractor_snapshot(record: Any) -> dict[str, Any] | None:
         if quantity <= 0:
             continue
         module_counts[module_type] = quantity
-        resource_slots[resource] = resource_slots.get(resource, 0) + quantity
-    if not resource_slots:
+        resource = EXTRACTOR_RESOURCE_BY_MODULE.get(module_type)
+        if resource:
+            resource_slots[resource] = resource_slots.get(resource, 0) + quantity
+    if not module_counts:
         return None
     return {
         "stationId": station_id,
@@ -266,6 +287,302 @@ def _normalise_extractor_snapshot(record: Any) -> dict[str, Any] | None:
         "observedAt": str(record.get("observedAt") or "") or None,
     }
 
+
+def _normalise_colony_economy_snapshot(record: Any) -> dict[str, Any] | None:
+    """Keep only the passive Colony-tab values used for local estimates."""
+    if not isinstance(record, dict):
+        return None
+    station_id = str(record.get("station_id") or record.get("stationId") or "").strip()
+    system_name = str(record.get("system_name") or record.get("systemName") or "").strip()
+    tick_seconds = _as_number(record.get("tick_interval_seconds", record.get("tickIntervalSeconds")))
+    raw_basket = record.get("basket")
+    if not station_id or not system_name or not isinstance(tick_seconds, (int, float)) or not math.isfinite(tick_seconds) or tick_seconds <= 0 or not isinstance(raw_basket, list):
+        return None
+    basket: list[dict[str, float | str]] = []
+    seen_resources: set[str] = set()
+    for raw_entry in raw_basket:
+        if not isinstance(raw_entry, dict):
+            continue
+        resource = str(raw_entry.get("resource") or "").strip()
+        per_capita = _as_number(raw_entry.get("per_capita", raw_entry.get("perCapita")))
+        if not resource or resource in seen_resources or not isinstance(per_capita, (int, float)) or not math.isfinite(per_capita) or per_capita <= 0:
+            continue
+        basket.append({"resource": resource, "perCapita": float(per_capita)})
+        seen_resources.add(resource)
+    if not basket:
+        return None
+    population = _as_number(record.get("population"))
+    return {
+        "stationId": station_id,
+        "stationName": str(record.get("station_name") or record.get("stationName") or "").strip() or None,
+        "systemName": system_name,
+        "planetId": str(record.get("planet_id") or record.get("planetId") or "").strip() or None,
+        "planetName": str(record.get("planet_name") or record.get("planetName") or "").strip() or None,
+        "tickIntervalSeconds": float(tick_seconds),
+        "population": float(population) if isinstance(population, (int, float)) and math.isfinite(population) and population >= 0 else None,
+        "basket": basket,
+        "observedAt": str(record.get("observedAt") or "") or None,
+    }
+
+
+def extractor_module_production_per_day(catalog_items: list[dict[str, Any]] | None) -> dict[str, float]:
+    """Read each observed extractor's own catalogued ``Production`` value."""
+    production: dict[str, float] = {}
+    for item in catalog_items or []:
+        if not isinstance(item, dict):
+            continue
+        module = str(item.get("type") or "").strip()
+        if module not in EXTRACTOR_RESOURCE_BY_MODULE or module in production:
+            continue
+        stats = item.get("stats")
+        if not isinstance(stats, dict):
+            continue
+        raw_production = next((value for key, value in stats.items() if str(key or "").strip().casefold() == "production"), None)
+        match = PRODUCTION_PER_DAY_RE.search(str(raw_production or ""))
+        if not match:
+            continue
+        try:
+            amount = float(match.group("amount").replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(amount) and amount > 0:
+            production[module] = amount
+    return production
+
+
+def _cycle_resource_key(value: Any) -> str:
+    """Normalise the small set of resource labels used in processor stats."""
+    key = re.sub(r"[^a-z0-9]+", "_", str(value or "").casefold()).strip("_")
+    return {"ration": "rations"}.get(key, key)
+
+
+def _cycle_resource_amounts(value: Any) -> dict[str, float]:
+    """Parse a logged processor input/output line into normalised resources."""
+    amounts: dict[str, float] = {}
+    for part in str(value or "").split("+"):
+        match = RATION_PROCESSOR_CYCLE_PART_RE.match(part)
+        if not match:
+            continue
+        try:
+            amount = float(match.group("amount").replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        resource = _cycle_resource_key(match.group("resource"))
+        if resource and math.isfinite(amount) and amount > 0:
+            amounts[resource] = amounts.get(resource, 0.0) + amount
+    return amounts
+
+
+def processor_module_cycle_profiles(catalog_items: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    """Read the logged full-load recipes for supported production modules."""
+    profiles: dict[str, dict[str, Any]] = {}
+    for item in catalog_items or []:
+        if not isinstance(item, dict):
+            continue
+        module = str(item.get("type") or "").strip()
+        if module not in PROCESSOR_MODULE_TYPES or module in profiles:
+            continue
+        stats = item.get("stats")
+        if not isinstance(stats, dict):
+            continue
+        values = {str(key or "").strip().casefold(): str(value or "") for key, value in stats.items()}
+        inputs = _cycle_resource_amounts(values.get("cycle input"))
+        outputs = _cycle_resource_amounts(values.get("cycle output"))
+        cycle_match = RATION_PROCESSOR_CYCLE_SECONDS_RE.search(values.get("cycle time", ""))
+        if not inputs or not outputs or not cycle_match:
+            continue
+        try:
+            cycle_seconds = float(cycle_match.group("seconds").replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(cycle_seconds) or cycle_seconds <= 0:
+            continue
+        profiles[module] = {"inputs": inputs, "outputs": outputs, "cycleSeconds": cycle_seconds}
+    return profiles
+
+
+def ration_processor_profile(catalog_items: list[dict[str, Any]] | None) -> dict[str, float] | None:
+    """Read the logged Ration Processor recipe without assuming its rates."""
+    for item in catalog_items or []:
+        if not isinstance(item, dict) or str(item.get("type") or "").strip() != RATION_PROCESSOR_TYPE:
+            continue
+        stats = item.get("stats")
+        if not isinstance(stats, dict):
+            continue
+        values: dict[str, str] = {
+            str(key or "").strip().casefold(): str(value or "")
+            for key, value in stats.items()
+        }
+        inputs: dict[str, float] = {}
+        for part in values.get("cycle input", "").split("+"):
+            match = RATION_PROCESSOR_CYCLE_PART_RE.match(part)
+            if not match:
+                continue
+            try:
+                amount = float(match.group("amount").replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+            resource = _cycle_resource_key(match.group("resource"))
+            if resource and math.isfinite(amount) and amount > 0:
+                inputs[resource] = inputs.get(resource, 0.0) + amount
+        output_match = RATION_PROCESSOR_CYCLE_PART_RE.match(values.get("cycle output", ""))
+        cycle_match = RATION_PROCESSOR_CYCLE_SECONDS_RE.search(values.get("cycle time", ""))
+        if not output_match or not cycle_match:
+            continue
+        try:
+            rations = float(output_match.group("amount").replace(",", ""))
+            seconds = float(cycle_match.group("seconds").replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if (
+            _cycle_resource_key(output_match.group("resource")) != "rations"
+            or not all(math.isfinite(value) and value > 0 for value in (rations, seconds))
+            or not isinstance(inputs.get("space_corn"), float)
+            or inputs["space_corn"] <= 0
+        ):
+            continue
+        credits = inputs.get("credits", 0.0)
+        if not isinstance(credits, float) or not math.isfinite(credits) or credits < 0:
+            continue
+        return {
+            "spaceCornPerCycle": inputs["space_corn"],
+            "creditsPerCycle": credits,
+            "rationsPerCycle": rations,
+            "cycleSeconds": seconds,
+        }
+    return None
+
+
+def ration_projection(
+    space_corn_per_tick: Any,
+    tick_interval_seconds: Any,
+    catalog_items: list[dict[str, Any]] | None,
+    rations_per_capita: Any = None,
+) -> dict[str, Any]:
+    """Project corn-limited Ration output from the observed processor recipe."""
+    corn = _as_number(space_corn_per_tick)
+    tick_seconds = _as_number(tick_interval_seconds)
+    profile = ration_processor_profile(catalog_items)
+    if (
+        not profile
+        or not isinstance(corn, (int, float))
+        or not isinstance(tick_seconds, (int, float))
+        or not math.isfinite(corn)
+        or not math.isfinite(tick_seconds)
+        or corn < 0
+        or tick_seconds <= 0
+    ):
+        return {"profile": profile, "rationsPerTick": None, "processorsRequired": None, "creditsPerTick": None, "sustainablePopulation": None}
+    rations = float(corn) * profile["rationsPerCycle"] / profile["spaceCornPerCycle"]
+    per_processor = float(tick_seconds) * profile["rationsPerCycle"] / profile["cycleSeconds"]
+    credits = rations * profile["creditsPerCycle"] / profile["rationsPerCycle"]
+    per_capita = _as_number(rations_per_capita)
+    sustainable = (
+        math.floor(rations / float(per_capita))
+        if isinstance(per_capita, (int, float)) and math.isfinite(per_capita) and per_capita > 0
+        else None
+    )
+    return {
+        "profile": profile,
+        "rationsPerTick": rations,
+        "processorsRequired": math.ceil(rations / per_processor) if per_processor > 0 else None,
+        "creditsPerTick": credits,
+        "sustainablePopulation": sustainable,
+    }
+
+
+def extractor_record_output_per_tick(
+    record: dict[str, Any] | None,
+    catalog_items: list[dict[str, Any]] | None,
+    tick_interval_seconds: Any,
+) -> dict[str, float]:
+    """Calculate observed raw extractor volume for the server's actual tick."""
+    tick_seconds = _as_number(tick_interval_seconds)
+    module_counts = record.get("moduleCounts") if isinstance(record, dict) else None
+    if not isinstance(tick_seconds, (int, float)) or not math.isfinite(tick_seconds) or tick_seconds <= 0 or not isinstance(module_counts, dict):
+        return {}
+    rates_per_day = extractor_module_production_per_day(catalog_items)
+    output: dict[str, float] = {}
+    for raw_module, raw_quantity in module_counts.items():
+        module = str(raw_module or "").strip()
+        resource = EXTRACTOR_RESOURCE_BY_MODULE.get(module)
+        rate_per_day = rates_per_day.get(module)
+        try:
+            quantity = int(raw_quantity)
+        except (TypeError, ValueError):
+            continue
+        if not resource or quantity <= 0 or rate_per_day is None:
+            continue
+        output[resource] = output.get(resource, 0.0) + quantity * rate_per_day * float(tick_seconds) / SECONDS_PER_DAY
+    return {resource: value for resource, value in output.items() if math.isfinite(value) and value > 0}
+
+
+def equipped_module_production_per_tick(
+    record: dict[str, Any] | None,
+    catalog_items: list[dict[str, Any]] | None,
+    tick_interval_seconds: Any,
+) -> dict[str, dict[str, float]]:
+    """Calculate full-load output, input demand, and credit cost from equipped modules.
+
+    This uses only the station's passively observed equipped module counts and
+    the public catalogue rates. Processor requirements remain separate because
+    cargo and reserves are not captured, so actual throughput can be lower when
+    required inputs are unavailable.
+    """
+    tick_seconds = _as_number(tick_interval_seconds)
+    module_counts = record.get("moduleCounts") if isinstance(record, dict) else None
+    result: dict[str, dict[str, float]] = {"outputs": {}, "inputs": {}, "credits": {}}
+    if not isinstance(tick_seconds, (int, float)) or not math.isfinite(tick_seconds) or tick_seconds <= 0 or not isinstance(module_counts, dict):
+        return result
+    result["outputs"].update(extractor_record_output_per_tick(record, catalog_items, tick_seconds))
+    profiles = processor_module_cycle_profiles(catalog_items)
+    for raw_module, raw_quantity in module_counts.items():
+        module = str(raw_module or "").strip()
+        profile = profiles.get(module)
+        try:
+            quantity = int(raw_quantity)
+        except (TypeError, ValueError):
+            continue
+        if quantity <= 0 or profile is None:
+            continue
+        cycles = quantity * float(tick_seconds) / float(profile["cycleSeconds"])
+        for resource, amount in profile["outputs"].items():
+            result["outputs"][resource] = result["outputs"].get(resource, 0.0) + cycles * float(amount)
+        for resource, amount in profile["inputs"].items():
+            target = "credits" if resource == "credits" else "inputs"
+            result[target][resource] = result[target].get(resource, 0.0) + cycles * float(amount)
+    return {
+        section: {resource: value for resource, value in values.items() if math.isfinite(value) and value > 0}
+        for section, values in result.items()
+    }
+
+
+def colony_baseline_support_estimate(
+    output_per_tick: dict[str, Any] | None,
+    basket: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Estimate direct-extractor colony support from the server basket only."""
+    output = output_per_tick if isinstance(output_per_tick, dict) else {}
+    supported_by_resource: dict[str, float] = {}
+    missing_resources: list[str] = []
+    for entry in basket or []:
+        if not isinstance(entry, dict):
+            continue
+        resource = str(entry.get("resource") or "").strip()
+        per_capita = _as_number(entry.get("perCapita", entry.get("per_capita")))
+        amount = _as_number(output.get(resource))
+        if not resource or not isinstance(per_capita, (int, float)) or not math.isfinite(per_capita) or per_capita <= 0:
+            continue
+        if not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
+            missing_resources.append(resource)
+            continue
+        supported_by_resource[resource] = float(amount) / float(per_capita)
+    missing_resources = sorted(set(missing_resources), key=str.casefold)
+    if missing_resources or not supported_by_resource:
+        return {"supportedPopulation": None, "limitingResources": [], "missingResources": missing_resources, "supportByResource": supported_by_resource}
+    limit = min(supported_by_resource.values())
+    limiting = sorted((resource for resource, value in supported_by_resource.items() if math.isclose(value, limit, rel_tol=1e-9, abs_tol=1e-9)), key=str.casefold)
+    return {"supportedPopulation": math.floor(limit), "limitingResources": limiting, "missingResources": [], "supportByResource": supported_by_resource}
 
 def system_extractor_slots(records: list[dict[str, Any]] | None, system_name: str) -> dict[str, int]:
     """Sum privately observed equipped extractors for one named system."""
@@ -824,16 +1141,20 @@ class DataStore:
         markets: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         training_offers: dict[str, dict[str, Any]] = {}
         scans: dict[str, dict[str, Any]] = {}
+        body_rosters: dict[str, dict[str, Any]] = {}
         malformed = 0
         catalog_rows = 0
         training_rows = 0
         scan_rows = 0
+        body_roster_rows = 0
         scan_attempts = 0
         failed_scans = 0
         snapshot_rows = 0
         snapshots: dict[str, dict[str, Any]] = {}
         extractor_snapshots: dict[str, dict[str, Any]] = {}
         extractor_snapshot_rows = 0
+        colony_economy_snapshots: dict[str, dict[str, Any]] = {}
+        colony_economy_snapshot_rows = 0
         newest_timestamp = ""
         current_system_id: str | None = None
 
@@ -932,11 +1253,49 @@ class DataStore:
                                 continue
                             planet_id = str(scan.get("planet_id") or scan.get("planet_name"))
                             scan = dict(scan)
+                            scan["isScanned"] = True
                             scan["observedAt"] = timestamp
                             if current_system_id and not scan.get("system_name"):
                                 scan["_systemIdHint"] = current_system_id
                             scans[planet_id] = scan
                             scan_rows += 1
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            malformed += 1
+
+                    marker_index = line.find(SYSTEM_BODY_ROSTER_MARKER)
+                    if marker_index >= 0:
+                        try:
+                            roster = json.loads(
+                                line[marker_index + len(SYSTEM_BODY_ROSTER_MARKER) :]
+                            )
+                            system_name = str(roster.get("system_name") or "").strip()
+                            bodies = roster.get("bodies")
+                            if not system_name or not isinstance(bodies, list):
+                                raise ValueError("system body roster is incomplete")
+                            for raw_body in bodies:
+                                if not isinstance(raw_body, dict):
+                                    continue
+                                planet_id = str(raw_body.get("planet_id") or "").strip()
+                                planet_name = str(raw_body.get("planet_name") or "").strip()
+                                if not planet_id or not planet_name:
+                                    continue
+                                is_moon = bool(raw_body.get("is_moon"))
+                                planet_type = str(raw_body.get("planet_type") or "").strip()
+                                if not planet_type:
+                                    planet_type = "Moon" if is_moon else "Unknown"
+                                record = {
+                                    "planet_id": planet_id,
+                                    "planet_name": planet_name,
+                                    "planet_type": planet_type,
+                                    "system_name": system_name,
+                                    "is_moon": is_moon,
+                                    "isScanned": False,
+                                    "observedAt": timestamp,
+                                }
+                                existing = body_rosters.get(planet_id)
+                                if existing is None or str(record["observedAt"] or "") >= str(existing.get("observedAt") or ""):
+                                    body_rosters[planet_id] = record
+                                body_roster_rows += 1
                         except (json.JSONDecodeError, TypeError, ValueError):
                             malformed += 1
 
@@ -956,6 +1315,21 @@ class DataStore:
                             malformed += 1
                         continue
 
+                    marker_index = line.find(COLONY_ECONOMY_MARKER)
+                    if marker_index >= 0:
+                        try:
+                            record = json.loads(line[marker_index + len(COLONY_ECONOMY_MARKER) :])
+                            normalised = _normalise_colony_economy_snapshot(record)
+                            if normalised is not None:
+                                normalised["observedAt"] = timestamp or normalised.get("observedAt")
+                                station_id = str(normalised["stationId"])
+                                existing = colony_economy_snapshots.get(station_id)
+                                if existing is None or str(normalised.get("observedAt") or "") >= str(existing.get("observedAt") or ""):
+                                    colony_economy_snapshots[station_id] = normalised
+                                colony_economy_snapshot_rows += 1
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            malformed += 1
+                        continue
                     for marker, snapshot_name in SNAPSHOT_MARKERS.items():
                         marker_index = line.find(marker)
                         if marker_index < 0:
@@ -1153,6 +1527,12 @@ class DataStore:
             if isinstance(system, dict) and system.get("system_id") is not None
         } if isinstance(explored_payload, list) else {}
 
+        # A real scanner response always takes precedence over an entry-only
+        # roster row from this log. ArchiveStore keeps that same rule when
+        # combining current observations with old or shared archive data.
+        for planet_id, roster in body_rosters.items():
+            scans.setdefault(planet_id, roster)
+
         scan_results = []
         for scan in scans.values():
             scan = dict(scan)
@@ -1328,6 +1708,13 @@ class DataStore:
                 str(record.get("stationId") or ""),
             ),
         )
+        private_colony_economy = sorted(
+            colony_economy_snapshots.values(),
+            key=lambda record: (
+                str(record.get("systemName") or "").casefold(),
+                str(record.get("stationId") or ""),
+            ),
+        )
 
         return {
             "meta": {
@@ -1344,8 +1731,11 @@ class DataStore:
                 "trainingOfferCount": len(training_results),
                 "trainingSkillCount": len({offer["skillId"] for offer in training_results}),
                 "scanRows": scan_rows,
+                "bodyRosterRows": body_roster_rows,
                 "extractorSnapshotRows": extractor_snapshot_rows,
                 "extractorStationCount": len(private_extractor_usage),
+                "colonyEconomySnapshotRows": colony_economy_snapshot_rows,
+                "colonyEconomyStationCount": len(private_colony_economy),
                 "snapshotRows": snapshot_rows,
                 "scanAttempts": scan_attempts,
                 "failedScans": failed_scans,
@@ -1354,6 +1744,18 @@ class DataStore:
                 "categoryCount": len(categories),
                 "stationCount": len(stations),
                 "scanCount": len(scan_results),
+                "scannedBodyCount": sum(
+                    1
+                    for scan in scan_results
+                    if bool(scan.get("isScanned"))
+                    or ("isScanned" not in scan and scan.get("ok") is not False)
+                ),
+                "unscannedBodyCount": sum(
+                    1
+                    for scan in scan_results
+                    if not bool(scan.get("isScanned"))
+                    and not ("isScanned" not in scan and scan.get("ok") is not False)
+                ),
                 "mapSystemCount": map_data["systemCount"],
                 "mapEdgeCount": map_data["edgeCount"],
                 "mappedStationCount": map_data["mappedStationCount"],
@@ -1372,6 +1774,8 @@ class DataStore:
             # Dock-authorised module counts are intentionally local-only.
             # sharing.sanitise_catalog is a whitelist and does not export this.
             "privateExtractorUsage": private_extractor_usage,
+            # The personal Colony-tab basket stays local and is never shared.
+            "privateColonyEconomy": private_colony_economy,
             "training": {
                 "offers": training_results,
                 "offerCount": len(training_results),

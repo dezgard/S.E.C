@@ -5,8 +5,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import launcher
 import updater
 
 
@@ -59,9 +60,35 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(release.tag, "v0.12")
         self.assertTrue(updater.is_newer_release(release.tag, "v0.11"))
         self.assertFalse(updater.is_newer_release("v0.11", "v0.11"))
-        self.assertTrue(updater.is_newer_release("v0.15"))
-        self.assertFalse(updater.is_newer_release("v0.14"))
+        self.assertTrue(updater.is_newer_release("v0.20"))
+        self.assertFalse(updater.is_newer_release("v0.18"))
+        self.assertFalse(updater.is_newer_release("v0.15"))
         self.assertFalse(updater.is_newer_release("release-candidate", "v0.11"))
+
+    def test_verified_update_schedules_the_real_window_close(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "Companion.exe"
+            staged = Path(folder) / "StarEmpireCompanion-v0.17.update.exe"
+            target.write_bytes(b"current")
+            staged.write_bytes(b"verified update")
+            desktop = object.__new__(launcher.StarEmpireDesktop)
+            desktop.root = Mock()
+            desktop._set_update_button_ready = Mock()
+            desktop._packaged_companion_path = Mock(return_value=target)
+            desktop.close = Mock()
+
+            with (
+                patch.object(launcher.messagebox, "askyesno", return_value=True),
+                patch.object(launcher.messagebox, "showinfo"),
+                patch.object(launcher.updater, "schedule_replacement") as schedule,
+                patch.object(launcher.os, "getpid", return_value=1234),
+            ):
+                desktop._finish_update_download(staged, None)
+
+        schedule.assert_called_once_with(target, staged, 1234)
+        desktop.root.after.assert_called_once_with(120, desktop.close)
+        desktop.root.after.call_args.args[1]()
+        desktop.close.assert_called_once_with()
 
     def test_verified_download_requires_release_checksum(self) -> None:
         content = b"verified application payload"

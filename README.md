@@ -4,11 +4,15 @@ Star Empire Companion is a native Windows desktop archive for player-observed St
 
 ## Public boundary
 
+This source tree is intentionally separate from the private `StarEmpireDataBrowser` project next to it.
+
 - It may use a **passive, logger-only Game Link** to record data the normal client already receives.
+- It must never automate gameplay, send player commands, or create an in-game control panel.
+- It contains no dungeon planner, dungeon runner, dungeon AI view, combat profile, or saved dungeon plan.
+- It contains no in-game visual effects, including damage numbers, shield effects, turret overlays, or hardpoint displays.
 - It remains a native desktop application; it does not start a web browser or web server.
 
-S.E.C. v1.5.13.0 is published as the public v0.14 updater-reliability release.
-It has not been deployed to a game folder.
+The private project is retained unchanged as rollback material. S.E.C. v0.19 is published on GitHub. It has not been deployed to a game folder.
 
 ## Run or build locally
 
@@ -25,15 +29,8 @@ The packaged application has a manual **CHECK UPDATE** button. It checks only
 the latest release in `dezgard/S.E.C`; nothing is downloaded automatically.
 When a newer public tag is available, it requires confirmation, downloads the
 release executable and its matching SHA-256 asset, and installs only after the
-checksum and published size match. It finds the actual running executable even
-when the file or containing folder has been renamed. After the Companion closes,
-the verified update is copied beside it, checked again, and renamed into the
-vacant executable path while the previous file is retained for rollback. The
-helper retries temporary locks and then reopens the updated Companion. A UAC
-prompt appears only when Windows denies write access to the install folder; if
-installation cannot complete, the previous executable is restored and reopened
-where possible, and a local failure log is retained. Source/Python runs and all
-game files are excluded.
+checksum and published size match. The current Companion is replaced only after
+it closes, then restarts. Source/Python runs and all game files are excluded.
 
 ## Universal search
 
@@ -77,6 +74,36 @@ The system-yield table keeps the one-base aggregate first and places its
 moon-aware maximum in parentheses—for example `Metal Ore: 498 (1,494)` when
 all contributing bodies are planets. “Not locally observed as used” is not a
 claim that a slot is empty: used counts and tiers include only bases the player
-has docked at. Those local observations are stored locally and never enter a
+has docked at. Those private observations are stored locally and never enter a
 shared `.secintel.json` bundle; older aggregate-only records remain totals-only
 rather than having tiers guessed from their count.
+
+## Extractor output and colony support
+
+For a docked managed extraction base, Map Intelligence can show the actual raw
+**output per server colony tick** for each observed resource. It reads the
+logged item catalogue's `Production` stat for the equipped modules and scales
+that value by the normal Colony tab's server-supplied tick interval; T3/T6/T9
+remain a visible module mix, not a guessed production rate.
+
+Open the normal in-game **Colony** tab once while docked at that base. The
+passive Game Link then records only the already-delivered station identity,
+current population, tick interval, and baseline basket per-capita demand. The
+panel calculates a conservative direct-extraction support estimate from the
+limiting basket resource. If a resource needs an unobserved direct source,
+processor, logistics, price, or reserve, the estimate is marked **INCOMPLETE**
+instead of guessed. These economy observations are private local data and are
+not included in shared `.secintel.json` files.
+## System body roster
+
+When the player enters a normal system with Game Link installed, S.E.C. records
+the client-delivered names, body IDs, types, and moon flags for its planets and
+moons. The Planetary Scan Archive lists those bodies immediately as
+**UNSCANNED**. It does not invent colony, resource, extractor, or base data;
+those fields remain unavailable until the player performs an ordinary in-game
+scan. A real scan always takes precedence over a later roster sighting.
+
+Body rosters are community-shareable through the existing opt-in
+`.secintel.json` export/import flow. They contain only public body identity,
+system, type, moon flag, scan status, and observation time—never player,
+inventory, account, or local-note data.

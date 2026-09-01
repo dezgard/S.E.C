@@ -815,6 +815,12 @@ def format_number(value: Any, empty: str = "-") -> str:
     return str(value)
 
 
+def application_window_title(release_tag: str = updater.CURRENT_RELEASE_TAG) -> str:
+    """Return the public Companion window title with its release version."""
+    tag = str(release_tag or "").strip()
+    return f"Star Empire Companion • {tag}" if tag else "Star Empire Companion"
+
+
 def compact_number(value: Any) -> str:
     if not isinstance(value, (int, float)) or value <= 0:
         return "-"
@@ -927,6 +933,7 @@ ITEM_COLUMN_PRESETS = {
 SCAN_COLUMN_SPECS: dict[str, dict[str, Any]] = {
     "system": {"label": "SYSTEM", "width": 165, "minwidth": 120, "anchor": "w", "kind": "text"},
     "type": {"label": "TYPE", "width": 92, "minwidth": 70, "anchor": "w", "kind": "text"},
+    "status": {"label": "SCAN STATUS", "width": 104, "minwidth": 88, "anchor": "w", "kind": "text"},
     "colony": {"label": "COLONY RATING", "width": 128, "minwidth": 100, "anchor": "w", "kind": "text"},
     "score": {"label": "SCORE", "width": 62, "minwidth": 52, "anchor": "e", "kind": "number", "first_desc": True},
     "atmosphere": {"label": "ATMOSPHERE", "width": 126, "minwidth": 95, "anchor": "w", "kind": "text"},
@@ -934,14 +941,14 @@ SCAN_COLUMN_SPECS: dict[str, dict[str, Any]] = {
     "gravity": {"label": "GRAVITY", "width": 112, "minwidth": 85, "anchor": "w", "kind": "text"},
     "geology": {"label": "GEOLOGY", "width": 112, "minwidth": 85, "anchor": "w", "kind": "text"},
     "ecology": {"label": "ECOLOGY", "width": 132, "minwidth": 96, "anchor": "w", "kind": "text"},
-    "resources": {"label": "BEST RESOURCES", "width": 220, "minwidth": 150, "anchor": "w", "kind": "text"},
+
     "resource_count": {"label": "YIELDS", "width": 62, "minwidth": 52, "anchor": "e", "kind": "number", "first_desc": True},
     "top_yield": {"label": "TOP YIELD", "width": 82, "minwidth": 65, "anchor": "e", "kind": "number", "first_desc": True},
     "extractor": {"label": "BEST EXTRACTOR", "width": 152, "minwidth": 110, "anchor": "w", "kind": "text"},
     "base": {"label": "BASE", "width": 58, "minwidth": 50, "anchor": "center", "kind": "number", "first_desc": True},
     "count": {"label": "BASES", "width": 60, "minwidth": 52, "anchor": "e", "kind": "number", "first_desc": True},
     "range": {"label": "SCAN RANGE", "width": 92, "minwidth": 72, "anchor": "e", "kind": "number", "first_desc": True},
-    "observed": {"label": "LAST SCAN", "width": 142, "minwidth": 120, "anchor": "w", "kind": "text", "first_desc": True},
+    "observed": {"label": "LAST SEEN / SCAN", "width": 142, "minwidth": 120, "anchor": "w", "kind": "text", "first_desc": True},
     "id": {"label": "PLANET ID", "width": 86, "minwidth": 68, "anchor": "e", "kind": "number"},
 }
 SCAN_COLUMN_SPECS.update({key: dict(spec) for key, spec in PERSONAL_COLUMN_SPECS.items()})
@@ -963,19 +970,32 @@ SCAN_COLUMN_SPECS.update({
     for name in SCAN_RESOURCE_KEYS
 })
 
-SCAN_DEFAULT_COLUMNS = ("system", "type", "colony", "resources", "base", "count", "observed")
+SCAN_REMOVED_RESOURCE_SUMMARY_COLUMN = "resources"
+SCAN_RESOURCE_MATRIX_COLUMNS = (
+    "system", "type", "status", "colony",
+) + tuple(f"{SCAN_RESOURCE_COLUMN_PREFIX}{name}" for name in SCAN_RESOURCE_KEYS)
+SCAN_DEFAULT_COLUMNS = SCAN_RESOURCE_MATRIX_COLUMNS + ("base", "count", "observed")
 SCAN_COLUMN_PRESETS = {
-    "Overview": SCAN_DEFAULT_COLUMNS,
-    "Colony": ("system", "type", "colony", "score", "atmosphere", "temperature", "gravity", "geology", "ecology", "base", "count"),
-    "Resources": ("system", "type", "resources", "resource_count", "top_yield", "extractor", "base", "count"),
-    "Yield by resource": ("system", "type") + tuple(
-        f"{SCAN_RESOURCE_COLUMN_PREFIX}{name}" for name in SCAN_RESOURCE_KEYS),
-    "Survey": ("system", "type", "range", "observed", "id"),
-    "My intel": ("favorite", "watchlist", "personal_category", "tags", "note", "system", "type", "colony", "base", "count"),
+
+    "Colony": ("system", "type", "status", "colony", "score", "atmosphere", "temperature", "gravity", "geology", "ecology", "base", "count"),
+    "Resources": SCAN_DEFAULT_COLUMNS,
+    "Yield by resource": SCAN_RESOURCE_MATRIX_COLUMNS,
+    "Survey": ("system", "type", "status", "range", "observed", "id"),
+    "My intel": ("favorite", "watchlist", "personal_category", "tags", "note", "system", "type", "status", "colony", "base", "count"),
 }
 
 
+def scan_is_completed(scan: dict[str, Any]) -> bool:
+    """Whether this row contains a real planet-scan reply rather than entry data."""
+    if "isScanned" in scan:
+        return bool(scan.get("isScanned"))
+    # Pre-roster archives are scan-only, so their missing status is scanned.
+    return scan.get("ok") is not False
+
+
 def scan_quality(scan: dict[str, Any]) -> tuple[str, float | None]:
+    if not scan_is_completed(scan):
+        return "Unscanned", None
     try:
         score = float(scan.get("colonization_index"))
     except (TypeError, ValueError):
@@ -992,6 +1012,8 @@ def scan_quality(scan: dict[str, Any]) -> tuple[str, float | None]:
 
 
 def scan_environment_value(scan: dict[str, Any], category: str) -> str:
+    if not scan_is_completed(scan):
+        return "Not scanned"
     for row in scan.get("colonization", []) if isinstance(scan.get("colonization"), list) else []:
         if not isinstance(row, dict):
             continue
@@ -1003,6 +1025,8 @@ def scan_environment_value(scan: dict[str, Any], category: str) -> str:
 
 
 def scan_positive_resources(scan: dict[str, Any], key: str = "resources") -> list[tuple[float, str]]:
+    if not scan_is_completed(scan):
+        return []
     values = scan.get(key) if isinstance(scan.get(key), dict) else {}
     ranked: list[tuple[float, str]] = []
     for name, value in values.items():
@@ -1018,6 +1042,8 @@ def scan_positive_resources(scan: dict[str, Any], key: str = "resources") -> lis
 
 def scan_yield_amounts(scan: dict[str, Any]) -> dict[str, float]:
     """Extractor yield for a body, falling back to old raw-resource scans."""
+    if not scan_is_completed(scan):
+        return {}
     values = scan.get("extractors")
     if not isinstance(values, dict) or not values:
         values = scan.get("resources") if isinstance(scan.get("resources"), dict) else {}
@@ -1038,7 +1064,7 @@ MAX_EXTRACTION_BASES_PER_MOON = 1
 
 def scan_is_moon(scan: dict[str, Any]) -> bool:
     """Whether this scan is one of the game-marked moon bodies."""
-    return str(scan.get("planet_type") or "").strip().casefold() == "moon"
+    return bool(scan.get("is_moon")) or str(scan.get("planet_type") or "").strip().casefold() == "moon"
 
 
 def scan_extraction_base_limit(scan: dict[str, Any]) -> int:
@@ -1170,6 +1196,364 @@ def system_extraction_capacity_entries(
     return sorted(entries, key=lambda entry: (-float(entry["maximum"]), str(entry["resource"]).casefold()))
 
 
+def colony_economy_entries(
+    extractor_records: list[dict[str, Any]] | None,
+    economy_records: list[dict[str, Any]] | None,
+    catalog_items: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Pair local equipped-production observations with Colony-tab details.
+
+    Equipped production capacity needs only the modules and server tick, which
+    is global. Colony support remains station-specific because it also needs
+    that station's own population and baseline basket.
+    """
+    economy_by_station = {
+        str(record.get("stationId") or "").strip(): record
+        for record in economy_records or []
+        if isinstance(record, dict) and str(record.get("stationId") or "").strip()
+    }
+    observed_ticks = {
+        float(record.get("tickIntervalSeconds"))
+        for record in economy_records or []
+        if isinstance(record, dict)
+        and isinstance(record.get("tickIntervalSeconds"), (int, float))
+        and math.isfinite(float(record["tickIntervalSeconds"]))
+        and float(record["tickIntervalSeconds"]) > 0
+    }
+    shared_tick = next(iter(observed_ticks)) if len(observed_ticks) == 1 else None
+    entries: list[dict[str, Any]] = []
+    for extractor in extractor_records or []:
+        if not isinstance(extractor, dict):
+            continue
+        station_id = str(extractor.get("stationId") or "").strip()
+        if not station_id:
+            continue
+        station_name = str(extractor.get("stationName") or station_id).strip() or station_id
+        economy = economy_by_station.get(station_id)
+        has_colony_data = isinstance(economy, dict)
+        tick_seconds = economy.get("tickIntervalSeconds") if has_colony_data else shared_tick
+        production_per_day = app.equipped_module_production_per_tick(
+            extractor,
+            catalog_items,
+            app.SECONDS_PER_DAY,
+        )
+        production = app.equipped_module_production_per_tick(
+            extractor,
+            catalog_items,
+            tick_seconds,
+        )
+        output_per_day = production_per_day["outputs"]
+        output = production["outputs"]
+        entry: dict[str, Any] = {
+            "stationId": station_id,
+            "stationName": station_name,
+            "hasColonyData": has_colony_data,
+            "tickIntervalSeconds": tick_seconds,
+            "usesSharedTick": not has_colony_data and shared_tick is not None,
+            "output": output,
+            "outputEntries": sorted(output.items(), key=lambda pair: (-pair[1], pair[0].casefold())),
+            "outputPerDayEntries": sorted(output_per_day.items(), key=lambda pair: (-pair[1], pair[0].casefold())),
+            "inputEntries": sorted(production["inputs"].items(), key=lambda pair: (-pair[1], pair[0].casefold())),
+            "creditCostPerTick": production["credits"].get("credits"),
+        }
+        if has_colony_data:
+            entry.update({
+                "estimate": app.colony_baseline_support_estimate(output, economy.get("basket")),
+                "population": economy.get("population"),
+            })
+        entries.append(entry)
+    return sorted(entries, key=lambda entry: (str(entry["stationName"]).casefold(), str(entry["stationId"])))
+
+def _galaxy_extractor_profiles(catalog_items: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    """Return the highest observed catalogue rate available for each resource."""
+    rates = app.extractor_module_production_per_day(catalog_items)
+    profiles: dict[str, dict[str, Any]] = {}
+    for module, resource in app.EXTRACTOR_RESOURCE_BY_MODULE.items():
+        rate = rates.get(module)
+        tier = app.EXTRACTOR_TIER_BY_MODULE.get(module)
+        if rate is None or tier is None:
+            continue
+        candidate = {"module": module, "tier": int(tier), "ratePerDay": float(rate)}
+        existing = profiles.get(resource)
+        if existing is None or (candidate["tier"], candidate["ratePerDay"], candidate["module"]) > (
+            existing["tier"], existing["ratePerDay"], existing["module"],
+        ):
+            profiles[resource] = candidate
+    return profiles
+
+
+def _galaxy_body_records(
+    scan: dict[str, Any],
+    extractor_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Match private base observations to one known body without cross-system guesses."""
+    body_id = str(scan.get("planet_id") or "").strip()
+    body_name = str(scan.get("planet_name") or "").strip().casefold()
+    system_name = str(scan.get("system_name") or "").strip().casefold()
+    matches: list[dict[str, Any]] = []
+    for record in extractor_records:
+        if not isinstance(record, dict) or str(record.get("systemName") or "").strip().casefold() != system_name:
+            continue
+        record_body_id = str(record.get("planetId") or "").strip()
+        if body_id and record_body_id:
+            if record_body_id == body_id:
+                matches.append(record)
+            continue
+        if body_name and str(record.get("planetName") or "").strip().casefold() == body_name:
+            matches.append(record)
+    return matches
+
+
+def _galaxy_current_extraction(
+    records: list[dict[str, Any]],
+    rates_per_day: dict[str, float],
+) -> tuple[dict[str, int], dict[str, dict[int, int]], dict[str, float]]:
+    slots: dict[str, int] = {}
+    tiers: dict[str, dict[int, int]] = {}
+    output_per_day: dict[str, float] = {}
+    for record in records:
+        module_counts = record.get("moduleCounts") if isinstance(record, dict) else None
+        if not isinstance(module_counts, dict):
+            continue
+        for raw_module, raw_quantity in module_counts.items():
+            module = str(raw_module or "").strip()
+            resource = app.EXTRACTOR_RESOURCE_BY_MODULE.get(module)
+            tier = app.EXTRACTOR_TIER_BY_MODULE.get(module)
+            rate = rates_per_day.get(module)
+            try:
+                quantity = int(raw_quantity)
+            except (TypeError, ValueError):
+                continue
+            if not resource or quantity <= 0:
+                continue
+            slots[resource] = slots.get(resource, 0) + quantity
+            if tier is not None:
+                resource_tiers = tiers.setdefault(resource, {})
+                resource_tiers[int(tier)] = resource_tiers.get(int(tier), 0) + quantity
+            if rate is not None:
+                output_per_day[resource] = output_per_day.get(resource, 0.0) + quantity * rate
+    return slots, tiers, output_per_day
+
+
+def system_body_extraction_entries(
+    scans: list[dict[str, Any]] | None,
+    extractor_records: list[dict[str, Any]] | None,
+    economy_records: list[dict[str, Any]] | None,
+    catalog_items: list[dict[str, Any]] | None,
+    system_name: str,
+) -> list[dict[str, Any]]:
+    """Return every recorded body with its privately observed extractor bases.
+
+    The archive's generic station entries do not carry player-set base names.
+    Docketed extractor snapshots do, along with an authoritative body ID, so
+    this keeps the detail attached to a planet or moon without guessing.
+    """
+    bodies = scans_for_system(scans, system_name)
+    target = str(system_name or "").strip().casefold()
+    records = [
+        record for record in extractor_records or []
+        if isinstance(record, dict)
+        and str(record.get("systemName") or "").strip().casefold() == target
+    ]
+    rates_per_day = app.extractor_module_production_per_day(catalog_items)
+    matched_station_ids: set[str] = set()
+
+    def station_entry(record: dict[str, Any]) -> dict[str, Any]:
+        station_id = str(record.get("stationId") or "").strip()
+        raw_name = str(record.get("stationName") or "").strip()
+        generic_names = {"dezgard's station", "unknown station", "station"}
+        station_name = raw_name if raw_name.casefold() not in generic_names else ""
+        economy = next((
+            row for row in colony_economy_entries([record], economy_records, catalog_items)
+            if str(row.get("stationId") or "").strip() == station_id
+        ), {})
+        _slots, tiers, per_day = _galaxy_current_extraction([record], rates_per_day)
+        tick_seconds = economy.get("tickIntervalSeconds") if isinstance(economy, dict) else None
+        raw_output = {
+            resource: amount * float(tick_seconds) / app.SECONDS_PER_DAY
+            for resource, amount in per_day.items()
+            if isinstance(tick_seconds, (int, float)) and math.isfinite(float(tick_seconds)) and float(tick_seconds) > 0
+        }
+        tier_entries = [
+            (resource.replace("_", " ").title(), extractor_tier_summary(tier_counts))
+            for resource, tier_counts in sorted(tiers.items(), key=lambda entry: entry[0].casefold())
+            if extractor_tier_summary(tier_counts)
+        ]
+        return {
+            "stationId": station_id,
+            "stationName": station_name or None,
+            "tierEntries": tier_entries,
+            "outputEntries": sorted(raw_output.items(), key=lambda entry: (-entry[1], entry[0].casefold())),
+            "tickIntervalSeconds": tick_seconds,
+        }
+
+    entries: list[dict[str, Any]] = []
+    for scan in bodies:
+        body_records = _galaxy_body_records(scan, records)
+        matched_station_ids.update(
+            str(record.get("stationId") or "").strip()
+            for record in body_records
+            if str(record.get("stationId") or "").strip()
+        )
+        entries.append({
+            "bodyId": str(scan.get("planet_id") or "").strip() or None,
+            "bodyName": str(scan.get("planet_name") or scan.get("planet_id") or "Unnamed body"),
+            "bodyType": "Moon" if scan_is_moon(scan) else str(scan.get("planet_type") or "Unknown").title(),
+            "scanned": scan_is_completed(scan),
+            "maxBases": scan_extraction_base_limit(scan),
+            "capacityEntries": resource_yield_entries(system_extractor_slot_capacities([scan])),
+            "stations": [station_entry(record) for record in body_records],
+        })
+
+    unmatched = [
+        record for record in records
+        if str(record.get("stationId") or "").strip() not in matched_station_ids
+    ]
+    for record in sorted(unmatched, key=lambda row: (str(row.get("planetName") or "").casefold(), str(row.get("stationName") or "").casefold())):
+        entries.append({
+            "bodyId": str(record.get("planetId") or "").strip() or None,
+            "bodyName": str(record.get("planetName") or "Unmatched body"),
+            "bodyType": "Unmatched",
+            "scanned": False,
+            "maxBases": None,
+            "capacityEntries": [],
+            "stations": [station_entry(record)],
+        })
+    return entries
+
+def galaxy_extraction_projection(
+
+    scans: list[dict[str, Any]] | None,
+    extractor_records: list[dict[str, Any]] | None,
+    economy_records: list[dict[str, Any]] | None,
+    catalog_items: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Build body-level current and maximum extraction maths for the local galaxy."""
+    known_scans = [scan for scan in scans or [] if isinstance(scan, dict)]
+    records = [record for record in extractor_records or [] if isinstance(record, dict)]
+    rates = app.extractor_module_production_per_day(catalog_items)
+    profiles = _galaxy_extractor_profiles(catalog_items)
+
+    tick_values = {
+        float(value)
+        for economy in economy_records or []
+        if isinstance(economy, dict)
+        for value in [economy.get("tickIntervalSeconds")]
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+    }
+    tick_seconds = next(iter(tick_values)) if len(tick_values) == 1 else None
+    ration_demand_values = {
+        float(entry.get("perCapita"))
+        for economy in economy_records or []
+        if isinstance(economy, dict)
+        for entry in economy.get("basket") or []
+        if isinstance(entry, dict)
+        and str(entry.get("resource") or "").strip() == "rations"
+        and isinstance(entry.get("perCapita"), (int, float))
+        and math.isfinite(float(entry["perCapita"]))
+        and float(entry["perCapita"]) > 0
+    }
+    rations_per_capita = next(iter(ration_demand_values)) if len(ration_demand_values) == 1 else None
+
+    rows: list[dict[str, Any]] = []
+    matched_station_ids: set[str] = set()
+    scanned_bodies = 0
+    for scan in known_scans:
+        complete = scan_is_completed(scan)
+        if complete:
+            scanned_bodies += 1
+        body_records = _galaxy_body_records(scan, records)
+        matched_station_ids.update(str(record.get("stationId") or "").strip() for record in body_records)
+        current_slots, current_tiers, current_per_day = _galaxy_current_extraction(body_records, rates)
+        capacities = {
+            resource: amount * scan_extraction_base_limit(scan)
+            for resource, amount in scan_yield_amounts(scan).items()
+            if amount > 0
+        }
+        resources = sorted(set(capacities) | set(current_slots), key=str.casefold)
+        body_name = str(scan.get("planet_name") or scan.get("planet_id") or "Unnamed body")
+        common = {
+            "systemName": str(scan.get("system_name") or "Unknown system"),
+            "bodyName": body_name,
+            "bodyType": "Moon" if scan_is_moon(scan) else str(scan.get("planet_type") or "Unknown").title(),
+            "bodyId": str(scan.get("planet_id") or "").strip() or None,
+            "scanned": complete,
+            "maxBases": scan_extraction_base_limit(scan),
+        }
+        if not resources:
+            rows.append({**common, "resource": None, "currentSlots": 0, "tierSummary": "", "currentPerDay": 0.0, "currentPerTick": None, "maxSlots": None, "maxTier": None, "maxPerDay": None, "maxPerTick": None})
+            continue
+        for resource in resources:
+            profile = profiles.get(resource)
+            current_day = current_per_day.get(resource, 0.0)
+            maximum_slots = capacities.get(resource)
+            maximum_day = maximum_slots * profile["ratePerDay"] if maximum_slots is not None and profile else None
+            rows.append({
+                **common,
+                "resource": resource,
+                "currentSlots": current_slots.get(resource, 0),
+                "tierSummary": extractor_tier_summary(current_tiers.get(resource)),
+                "currentPerDay": current_day,
+                "currentPerTick": current_day * tick_seconds / app.SECONDS_PER_DAY if tick_seconds else None,
+                "maxSlots": maximum_slots,
+                "maxTier": profile["tier"] if profile else None,
+                "maxPerDay": maximum_day,
+                "maxPerTick": maximum_day * tick_seconds / app.SECONDS_PER_DAY if maximum_day is not None and tick_seconds else None,
+            })
+
+    for record in records:
+        station_id = str(record.get("stationId") or "").strip()
+        if station_id and station_id in matched_station_ids:
+            continue
+        current_slots, current_tiers, current_per_day = _galaxy_current_extraction([record], rates)
+        for resource in sorted(current_slots, key=str.casefold):
+            current_day = current_per_day.get(resource, 0.0)
+            rows.append({
+                "systemName": str(record.get("systemName") or "Unknown system"),
+                "bodyName": str(record.get("planetName") or record.get("stationName") or station_id or "Unmatched base"),
+                "bodyType": "Unscanned",
+                "bodyId": str(record.get("planetId") or "").strip() or None,
+                "scanned": False,
+                "maxBases": None,
+                "resource": resource,
+                "currentSlots": current_slots.get(resource, 0),
+                "tierSummary": extractor_tier_summary(current_tiers.get(resource)),
+                "currentPerDay": current_day,
+                "currentPerTick": current_day * tick_seconds / app.SECONDS_PER_DAY if tick_seconds else None,
+                "maxSlots": None,
+                "maxTier": None,
+                "maxPerDay": None,
+                "maxPerTick": None,
+            })
+
+    current_by_resource: dict[str, float] = {}
+    maximum_by_resource: dict[str, float] = {}
+    for row in rows:
+        resource = row.get("resource")
+        if not resource:
+            continue
+        if row.get("currentPerTick") is not None:
+            current_by_resource[resource] = current_by_resource.get(resource, 0.0) + float(row["currentPerTick"])
+        if row.get("maxPerTick") is not None:
+            maximum_by_resource[resource] = maximum_by_resource.get(resource, 0.0) + float(row["maxPerTick"])
+    ration = app.ration_projection(
+        maximum_by_resource.get("space_corn"),
+        tick_seconds,
+        catalog_items,
+        rations_per_capita,
+    )
+    return {
+        "rows": sorted(rows, key=lambda row: (str(row["systemName"]).casefold(), str(row["bodyName"]).casefold(), str(row.get("resource") or "").casefold())),
+        "bodyCount": len(known_scans),
+        "scannedBodyCount": scanned_bodies,
+        "unscannedBodyCount": len(known_scans) - scanned_bodies,
+        "tickIntervalSeconds": tick_seconds,
+        "rationsPerCapita": rations_per_capita,
+        "currentByResource": current_by_resource,
+        "maximumByResource": maximum_by_resource,
+        "ration": ration,
+    }
+
 COVERAGE_COLUMN_SPECS: dict[str, dict[str, Any]] = {
     "hops": {"label": "HOPS", "width": 70, "minwidth": 55, "anchor": "e",
              "numeric": True},
@@ -1215,7 +1599,7 @@ def system_yield_summary(row: dict[str, Any], limit: int = 0) -> str:
 
 
 def system_yield_display_value(row: dict[str, Any], column: str) -> str:
-    """Show one-base resource yield followed by its moon-aware system maximum."""
+    """Show known yield, its moon-aware maximum, and any unscanned bodies."""
     if column == "planets":
         return format_number(row.get(column))
     try:
@@ -1223,22 +1607,28 @@ def system_yield_display_value(row: dict[str, Any], column: str) -> str:
     except (TypeError, ValueError):
         return ""
     if amount <= 0:
+        if column == "total" and int(row.get("unscannedBodies") or 0) > 0:
+            return "UNSCANNED"
         return ""
     maximum_key = "maxTotal" if column == "total" else f"max_{column}"
     try:
         maximum = float(row.get(maximum_key) or 0)
     except (TypeError, ValueError):
         maximum = 0.0
-    return f"{format_number(amount)} ({format_number(maximum or amount)})"
+    value = f"{format_number(amount)} ({format_number(maximum or amount)})"
+    if column == "total":
+        unscanned_bodies = int(row.get("unscannedBodies") or 0)
+        if unscanned_bodies > 0:
+            return f"{value} + {unscanned_bodies} UNSCANNED"
+    return value
 
 
 def system_resource_totals(scans: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sum each resource across every scanned body in a system.
+    """Summarise known bodies while only summing yields from completed scans.
 
     Two planets yielding 40 and 60 of the same resource make that system worth
-    100 of it, which is the figure that actually decides where to settle.
-    Extractor counts are preferred, falling back to the raw resource figure for
-    scans taken before extractors were recorded.
+    100 of known yield. Entry rosters still create a system row even before a
+    planet is scanned, but do not invent resource or extraction values.
     """
     systems: dict[str, dict[str, Any]] = {}
     for scan in scans or []:
@@ -1251,6 +1641,7 @@ def system_resource_totals(scans: list[dict[str, Any]]) -> list[dict[str, Any]]:
         row = systems.setdefault(
             system_key,
             {"system": name, "planets": 0, "moonBodies": 0, "maxBases": 0,
+             "scannedBodies": 0, "unscannedBodies": 0,
              "total": 0.0, "maxTotal": 0.0,
              **{f"{SCAN_RESOURCE_COLUMN_PREFIX}{res}": 0.0
                 for res in SCAN_RESOURCE_KEYS},
@@ -1262,6 +1653,10 @@ def system_resource_totals(scans: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if scan_is_moon(scan):
             row["moonBodies"] += 1
         row["maxBases"] += multiplier
+        if not scan_is_completed(scan):
+            row["unscannedBodies"] += 1
+            continue
+        row["scannedBodies"] += 1
         for resource, amount in scan_yield_amounts(scan).items():
             row[f"{SCAN_RESOURCE_COLUMN_PREFIX}{resource}"] += amount
             row["total"] += amount
@@ -1272,12 +1667,16 @@ def system_resource_totals(scans: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def scan_best_resources(scan: dict[str, Any], limit: int = 3) -> str:
+    if not scan_is_completed(scan):
+        return "Not scanned"
     ranked = scan_positive_resources(scan)
     return ", ".join(f"{name} {format_number(amount)}" for amount, name in ranked[:limit]) or "No useful yield"
 
 
 def scan_yield_summary(scan: dict[str, Any], limit: int = 0) -> str:
     """Recorded extractor yield for one scanned body, with legacy fallback."""
+    if not scan_is_completed(scan):
+        return "Not scanned"
     ranked = resource_yield_entries(scan_yield_amounts(scan))
     if limit:
         ranked = ranked[:limit]
@@ -1285,7 +1684,7 @@ def scan_yield_summary(scan: dict[str, Any], limit: int = 0) -> str:
 
 
 def scans_for_system(scans: list[dict[str, Any]] | None, system_name: str) -> list[dict[str, Any]]:
-    """Captured body scans for a map system, sorted for a stable detail panel."""
+    """Captured body observations for a map system, sorted for a stable detail panel."""
     target = str(system_name or "").strip().casefold()
     if not target:
         return []
@@ -1319,34 +1718,38 @@ def scan_column_raw_value(
         return annotation.get("systemName") or scan.get("system_name")
     if column == "type":
         return scan.get("planet_type")
+    if column == "status":
+        return "SCANNED" if scan_is_completed(scan) else "UNSCANNED"
     if column == "colony":
         return quality_label
     if column == "score":
         return quality_score
     if column in {"atmosphere", "temperature", "gravity", "geology", "ecology"}:
         return scan_environment_value(scan, column)
-    if column == "resources":
-        return scan_best_resources(scan)
     if column == "resource_count":
         return len(scan_positive_resources(scan))
     if column == "top_yield":
         ranked = scan_positive_resources(scan)
         return ranked[0][0] if ranked else None
     if column.startswith(SCAN_RESOURCE_COLUMN_PREFIX):
-        # Yield of one specific resource, so the list can be sorted by it.
-        # Extractors are the useful figure and fall back to the raw resource
-        # count when a scan predates that field.
+        # Planet resource output uses the raw scan yield and deliberately
+        # retains zeroes. Older scans that have only extractor data still
+        # retain their recorded value rather than being silently omitted.
+        if not scan_is_completed(scan):
+            return None
         name = column[len(SCAN_RESOURCE_COLUMN_PREFIX):]
-        for source in ("extractors", "resources"):
+        for source in ("resources", "extractors"):
             values = scan.get(source)
             if isinstance(values, dict) and name in values:
                 try:
                     amount = float(values[name])
                 except (TypeError, ValueError):
                     continue
-                return amount if amount > 0 else None
-        return None
+                return max(0.0, amount)
+        return 0.0
     if column == "extractor":
+        if not scan_is_completed(scan):
+            return None
         ranked = scan_positive_resources(scan, "extractors")
         return f"{ranked[0][1]} {format_number(ranked[0][0])}" if ranked else None
     if column == "base":
@@ -1379,6 +1782,36 @@ def scan_column_display_value(
     if column == "range":
         return f"{format_number(value)} u" if value not in (None, "") else "-"
     return format_number(value)
+
+
+def scan_layout_uses_removed_resource_summary(columns: list[str] | tuple[str, ...]) -> bool:
+    """Whether a saved archive layout still asks for the removed summary column."""
+    return SCAN_REMOVED_RESOURCE_SUMMARY_COLUMN in {str(column) for column in columns}
+
+
+def scan_restored_layout_columns(columns: Any) -> list[str]:
+    """Restore a saved archive layout without allowing the retired summary view."""
+    if not isinstance(columns, (list, tuple)):
+        return []
+    normalized = [str(column) for column in columns]
+    if scan_layout_uses_removed_resource_summary(normalized):
+        return list(SCAN_DEFAULT_COLUMNS)
+    return [column for column in normalized if column in SCAN_COLUMN_SPECS]
+
+
+def scan_resource_matrix_export_rows(
+    rows: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
+) -> list[list[str]]:
+    """CSV rows for the filtered per-planet all-resource matrix."""
+    columns = ("name",) + SCAN_DEFAULT_COLUMNS
+    headers = [
+        "PLANET" if column == "name" else SCAN_COLUMN_SPECS[column]["label"]
+        for column in columns
+    ]
+    return [headers, *[
+        [scan_column_display_value(scan, column, annotation, personal) for column in columns]
+        for scan, annotation, personal in rows
+    ]]
 
 
 def scan_column_sort_value(
@@ -1454,7 +1887,8 @@ def scan_matches_query(
         "bases": base_text,
         "range": str(scan.get("scan_range") or ""),
         "date": str(scan.get("observedAt") or ""),
-        "scanned": str(scan.get("observedAt") or ""),
+        "status": "scanned" if scan_is_completed(scan) else "unscanned",
+        "scanned": "yes scanned" if scan_is_completed(scan) else "no unscanned",
         "favorite": "yes favorite" if (personal or {}).get("favorite") else "no",
         "watch": "yes watchlist watched" if (personal or {}).get("watchlist") else "no",
         "category": str((personal or {}).get("category") or ""),
@@ -2235,7 +2669,9 @@ class StarEmpireDesktop:
         self.loading = False
         self.application_update_queue: queue.Queue[tuple[Any | None, Exception | None]] = queue.Queue(maxsize=1)
         self.application_update_active = False
+        self.application_update_release: updater.CompanionRelease | None = None
         self.global_search_dialog: tk.Toplevel | None = None
+        self.extraction_system_rows: dict[str, str] = {}
         self.global_search_results: dict[str, dict[str, Any]] = {}
         self.global_saved_search_by_label: dict[str, str] = {}
 
@@ -2358,6 +2794,7 @@ class StarEmpireDesktop:
         self._build_stations_page()
         self._build_skill_finder_page()
         self._build_map_page()
+        self._build_system_extraction_page()
         self._build_scans_page()
         self._build_system_yields_page()
         self._build_coverage_page()
@@ -2372,9 +2809,10 @@ class StarEmpireDesktop:
         self.show_page("items")
         self.root.after(40, self.update_logger_status)
         self.root.after(80, self.refresh_data)
+        self.root.after(400, self._check_for_application_update_silently)
 
     def _configure_window(self) -> None:
-        self.root.title("Star Empire Companion")
+        self.root.title(application_window_title())
         self.root.configure(bg=BG)
         self.root.minsize(1080, 680)
         width = min(1520, max(1180, self.root.winfo_screenwidth() - 120))
@@ -2412,6 +2850,22 @@ class StarEmpireDesktop:
             padding=(8, 9),
         )
         style.map("Archive.Treeview.Heading", background=[("active", PANEL_3)])
+        style.configure("Archive.TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure(
+            "Archive.TNotebook.Tab",
+            background=PANEL,
+            foreground=MUTED,
+            bordercolor=LINE,
+            lightcolor=LINE,
+            darkcolor=LINE,
+            font=("Cascadia Mono", 8, "bold"),
+            padding=(14, 9),
+        )
+        style.map(
+            "Archive.TNotebook.Tab",
+            background=[("selected", PANEL_2), ("active", PANEL_3)],
+            foreground=[("selected", CYAN), ("active", TEXT)],
+        )
         style.configure(
             "Archive.TCombobox",
             fieldbackground=PANEL_2,
@@ -2528,6 +2982,7 @@ class StarEmpireDesktop:
         for page, label in (
             ("items", "ITEM CATALOG"),
             ("map", "GALAXY MAP"),
+            ("extraction", "SYSTEM EXTRACTION"),
             ("stations", "STATION ARCHIVE"),
             ("training", "SKILL FINDER"),
             ("scans", "PLANET ARCHIVE"),
@@ -3128,6 +3583,7 @@ class StarEmpireDesktop:
         self._restore_map_view()
         self.root.after_idle(self._layout_map_overlays)
 
+
     def _register_map_overlay(self, key: str, handle: tk.Widget) -> None:
         handle.bind("<ButtonPress-1>", lambda event, panel=key: self._map_overlay_drag_start(event, panel))
         handle.bind("<B1-Motion>", self._map_overlay_drag_move)
@@ -3582,9 +4038,13 @@ class StarEmpireDesktop:
         ).grid(row=0, column=3, sticky="e", padx=(7, 0), ipady=2)
         self.system_yield_order_var.trace_add(
             "write", lambda *_a: self._populate_system_yields())
+        self._button(
+            tools, "OPEN SAVED SYSTEMS", lambda: self.show_page("extraction"),
+            PANEL_3, MINT,
+        ).grid(row=0, column=4, sticky="e", padx=(10, 0))
         tk.Label(tools, textvariable=self.system_yield_result_var, bg=PANEL_2,
                  fg=MUTED, font=MONO_SMALL, anchor="e").grid(
-            row=1, column=0, columnspan=4, sticky="e", pady=(7, 0))
+            row=1, column=0, columnspan=5, sticky="e", pady=(7, 0))
 
         wrap = tk.Frame(page, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
         wrap.grid(row=2, column=0, sticky="nsew")
@@ -3635,6 +4095,176 @@ class StarEmpireDesktop:
             self.show_page("map")
             self._focus_map_system(name)
 
+    def _build_system_extraction_page(self) -> None:
+        """Build the saved-system review page fed by the Galaxy Map context menu."""
+        page = tk.Frame(self.page_host, bg=BG, padx=14, pady=14)
+        page.grid(row=0, column=0, sticky="nsew")
+        page.grid_rowconfigure(1, weight=1)
+        page.grid_columnconfigure(0, weight=1)
+        self.pages["extraction"] = page
+
+        heading = self._page_heading(
+            page,
+            "SAVED SYSTEM EXTRACTION",
+            "Right-click a system on the Galaxy Map and choose ADD TO SYSTEM EXTRACTION. Select it here to review the same recorded system intelligence.",
+        )
+        heading.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        body = tk.Frame(page, bg=BG)
+        body.grid(row=1, column=0, sticky="nsew")
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+
+        sidebar = tk.Frame(body, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
+        sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        sidebar.grid_rowconfigure(1, weight=1)
+        sidebar.grid_columnconfigure(0, weight=1)
+        tk.Label(sidebar, text="SAVED SYSTEMS", bg=PANEL_2, fg=CYAN, font=("Cascadia Mono", 8, "bold"), anchor="w", padx=11, pady=9).grid(row=0, column=0, columnspan=2, sticky="ew")
+        tree = ttk.Treeview(sidebar, columns=("bodies", "scan", "bases"), show="tree headings", style="Archive.Treeview", selectmode="browse", height=18)
+        self.extraction_system_tree = tree
+        tree.column("#0", width=210, minwidth=145, stretch=True)
+        tree.heading("#0", text="SYSTEM", anchor="w")
+        for key, label, width in (("bodies", "BODIES", 65), ("scan", "SCANNED", 82), ("bases", "BASES", 62)):
+            tree.column(key, width=width, minwidth=50, anchor="e", stretch=False)
+            tree.heading(key, text=label, anchor="e")
+        tree.tag_configure("unavailable", foreground=AMBER)
+        tree.grid(row=1, column=0, sticky="nsew")
+        tree_scroll = ttk.Scrollbar(sidebar, orient="vertical", command=tree.yview, style="Archive.Vertical.TScrollbar")
+        tree_scroll.grid(row=1, column=1, sticky="ns")
+        tree.configure(yscrollcommand=tree_scroll.set)
+        tree.bind("<<TreeviewSelect>>", self._show_selected_extraction_system)
+        tree.bind("<Double-1>", lambda _event: self._show_selected_extraction_on_map())
+        actions = tk.Frame(sidebar, bg=PANEL_2, padx=9, pady=9)
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self._button(actions, "SHOW ON MAP", self._show_selected_extraction_on_map, PANEL_3, CYAN).pack(side="left")
+        self._button(actions, "REMOVE", self._remove_selected_extraction_system, PANEL_3, RED).pack(side="left", padx=(7, 0))
+
+        detail = tk.Frame(body, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
+        detail.grid(row=0, column=1, sticky="nsew")
+        detail.grid_rowconfigure(0, weight=1)
+        detail.grid_columnconfigure(0, weight=1)
+        text = tk.Text(detail, bg=PANEL, fg=TEXT, relief="flat", bd=0, padx=13, pady=11, wrap="word", font=MONO, state="disabled")
+        self.extraction_detail_text = text
+        text.grid(row=0, column=0, sticky="nsew")
+        detail_scroll = ttk.Scrollbar(detail, orient="vertical", command=text.yview, style="Archive.Vertical.TScrollbar")
+        detail_scroll.grid(row=0, column=1, sticky="ns")
+        text.configure(yscrollcommand=detail_scroll.set)
+        text.tag_configure("label", foreground=MUTED)
+        text.tag_configure("value", foreground=TEXT)
+        text.tag_configure("section", foreground=CYAN, font=("Cascadia Mono", 8, "bold"), spacing1=9, spacing3=4)
+        text.tag_configure("good", foreground=MINT)
+        text.tag_configure("warning", foreground=AMBER)
+        text.tag_configure("bad", foreground=RED)
+        self._render_system_extraction_empty()
+
+    def _render_system_extraction_empty(self) -> None:
+        widget = self.extraction_detail_text
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("end", "SAVED SYSTEM EXTRACTION\n", "section")
+        widget.insert("end", "Keep the Galaxy Map open, right-click a system, then choose ADD TO SYSTEM EXTRACTION.\n", "label")
+        widget.insert("end", "\nSelect a saved system on the left to see its celestial bodies, recorded extractor slots and tiers, observed equipped output, jump connections, and known stations.\n", "value")
+        widget.configure(state="disabled")
+        widget.yview_moveto(0)
+
+    def _system_extraction_lookup(self, name: str) -> dict[str, Any] | None:
+        target = str(name or "").strip().casefold()
+        if not target:
+            return None
+        return next((system for system in (self.data.get("map") or {}).get("systems", []) if isinstance(system, dict) and str(system.get("name") or "").strip().casefold() == target), None)
+
+    def _add_system_to_extraction(self, name: str) -> None:
+        system = self._system_extraction_lookup(name)
+        saved_name = str((system or {}).get("name") or name or "").strip()
+        if not saved_name:
+            return
+        added = self.user_state.add_extraction_system(saved_name)
+        self._populate_system_extraction_archive(preferred_name=saved_name)
+        self.status_var.set(f"{'Added' if added else 'Already saved'} {saved_name} in System Extraction")
+
+    def _populate_system_extraction_archive(self, preferred_name: str = "") -> None:
+        tree = getattr(self, "extraction_system_tree", None)
+        if tree is None:
+            return
+        selected = tree.selection()
+        selected_name = self.extraction_system_rows.get(selected[0], "") if selected else ""
+        wanted = str(preferred_name or selected_name or "").strip().casefold()
+        tree.delete(*tree.get_children())
+        self.extraction_system_rows = {}
+        first_iid = ""
+        wanted_iid = ""
+        saved_names = self.user_state.extraction_systems()
+        for index, saved_name in enumerate(saved_names):
+            system = self._system_extraction_lookup(saved_name)
+            canonical_name = str((system or {}).get("name") or saved_name).strip()
+            bodies = scans_for_system(self.data.get("scans"), canonical_name)
+            scanned = [body for body in bodies if scan_is_completed(body)]
+            base_count = sum(1 for record in self.data.get("privateExtractorUsage", []) if isinstance(record, dict) and str(record.get("systemName") or "").strip().casefold() == canonical_name.casefold())
+            iid = f"extraction-system-{index}"
+            if system:
+                values = (format_number(len(bodies), "0"), f"{len(scanned)} / {len(bodies)}", format_number(base_count, "0"))
+                tags: tuple[str, ...] = ()
+            else:
+                values = (format_number(len(bodies), "0"), "MAP MISSING", format_number(base_count, "0"))
+                tags = ("unavailable",)
+            tree.insert("", "end", iid=iid, text=canonical_name, values=values, tags=tags)
+            self.extraction_system_rows[iid] = canonical_name
+            if not first_iid:
+                first_iid = iid
+            if wanted and canonical_name.casefold() == wanted:
+                wanted_iid = iid
+        target_iid = wanted_iid or first_iid
+        if target_iid:
+            tree.selection_set(target_iid)
+            tree.focus(target_iid)
+            tree.see(target_iid)
+            self._show_selected_extraction_system()
+        else:
+            self._render_system_extraction_empty()
+
+    def _show_selected_extraction_system(self, _event=None) -> None:
+        tree = getattr(self, "extraction_system_tree", None)
+        if tree is None:
+            return
+        selection = tree.selection()
+        if not selection:
+            self._render_system_extraction_empty()
+            return
+        name = self.extraction_system_rows.get(selection[0], "")
+        system = self._system_extraction_lookup(name)
+        if system:
+            self._render_map_system_detail(system, self.extraction_detail_text)
+            return
+        widget = self.extraction_detail_text
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("end", "SYSTEM NOT IN CURRENT MAP\n", "section")
+        widget.insert("end", f"{name or 'Unknown system'}\n", "warning")
+        widget.insert("end", "This saved entry remains local, but the current Galaxy Map data no longer contains the system. Refresh after opening the in-game galaxy map to restore its recorded detail.\n", "label")
+        widget.configure(state="disabled")
+        widget.yview_moveto(0)
+
+    def _remove_selected_extraction_system(self) -> None:
+        tree = getattr(self, "extraction_system_tree", None)
+        selection = tree.selection() if tree is not None else ()
+        if not selection:
+            return
+        name = self.extraction_system_rows.get(selection[0], "")
+        if self.user_state.remove_extraction_system(name):
+            self.status_var.set(f"Removed {name} from System Extraction")
+            self._populate_system_extraction_archive()
+
+    def _show_selected_extraction_on_map(self) -> None:
+        tree = getattr(self, "extraction_system_tree", None)
+        selection = tree.selection() if tree is not None else ()
+        if not selection:
+            return
+        name = self.extraction_system_rows.get(selection[0], "")
+        if not self._system_extraction_lookup(name):
+            self.status_var.set(f"{name or 'System'} is not in the current Galaxy Map data")
+            return
+        self.show_page("map")
+        self._focus_map_system(name)
     def _populate_system_yields(self) -> None:
         tree = getattr(self, "system_yield_tree", None)
         if tree is None:
@@ -3691,7 +4321,7 @@ class StarEmpireDesktop:
         heading = self._page_heading(
             page,
             "PLANETARY SCAN ARCHIVE",
-            "Compare colony quality and resources, track your bases, and jump directly to each system",
+            "Compare colony quality and every scanned resource yield, track your bases, and jump directly to each system",
         )
         heading.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
@@ -3733,6 +4363,7 @@ class StarEmpireDesktop:
             else:
                 self.scan_base_filter_combo = combo
         self._button(tools, "RESET FILTERS", self._reset_scan_filters, PANEL_3, CYAN).grid(row=1, column=4, sticky="w", pady=(8, 0))
+        self._button(tools, "EXPORT RESOURCE CSV", self._export_scan_resource_matrix, PANEL_3, CYAN).grid(row=1, column=5, sticky="e", pady=(8, 0))
         tk.Label(
             tools,
             text='Examples: resource:gold  score>=75  atmosphere:breathable  base:yes',
@@ -3740,7 +4371,7 @@ class StarEmpireDesktop:
             fg=MUTED,
             font=MONO_SMALL,
             anchor="e",
-        ).grid(row=1, column=5, sticky="e", padx=(10, 0), pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=6, sticky="e", padx=(10, 0), pady=(8, 0))
 
         body = tk.Frame(page, bg=BG)
         body.grid(row=2, column=0, sticky="nsew")
@@ -4920,6 +5551,16 @@ class StarEmpireDesktop:
             activeforeground=AMBER,
         )
 
+    def _set_update_button_available(self) -> None:
+        self.update_button.configure(
+            state="normal",
+            text="UPDATE AVAILABLE",
+            bg=MINT,
+            fg="#03131b",
+            activebackground="#b9ffd9",
+            activeforeground="#03131b",
+        )
+
     def _run_application_update_task(self, work, finished) -> None:
         if self.application_update_active:
             return
@@ -4946,6 +5587,27 @@ class StarEmpireDesktop:
         self.application_update_active = False
         finished(result, error)
 
+    def _check_for_application_update_silently(self) -> None:
+        """Check the public release once at startup without interrupting play."""
+        if self.application_update_active or self._packaged_companion_path() is None:
+            return
+        self.update_button.configure(state="disabled", text="CHECKING...")
+        self._run_application_update_task(
+            updater.fetch_latest_release,
+            self._finish_silent_update_check,
+        )
+
+    def _finish_silent_update_check(self, result: Any | None, error: Exception | None) -> None:
+        if error is not None or not isinstance(result, updater.CompanionRelease):
+            self._set_update_button_ready()
+            return
+        if updater.is_newer_release(result.tag):
+            self.application_update_release = result
+            self._set_update_button_available()
+            return
+        self.application_update_release = None
+        self._set_update_button_ready()
+
     def check_for_application_update(self) -> None:
         if self._packaged_companion_path() is None:
             messagebox.showinfo(
@@ -4953,6 +5615,9 @@ class StarEmpireDesktop:
                 "This source/Python run cannot replace itself. Run the packaged StarEmpireCompanion.exe to check for updates.",
                 parent=self.root,
             )
+            return
+        if self.application_update_release is not None and updater.is_newer_release(self.application_update_release.tag):
+            self._offer_application_update(self.application_update_release)
             return
         self.update_button.configure(state="disabled", text="CHECKING...")
         self._run_application_update_task(updater.fetch_latest_release, self._finish_update_check)
@@ -4970,12 +5635,18 @@ class StarEmpireDesktop:
             messagebox.showerror("Update Check Failed", "GitHub returned an invalid update result.", parent=self.root)
             return
         if not updater.is_newer_release(result.tag):
+            self.application_update_release = None
             messagebox.showinfo(
                 "Star Empire Companion Update",
                 f"You are already running the latest public release ({updater.CURRENT_RELEASE_TAG}).",
                 parent=self.root,
             )
             return
+        self.application_update_release = result
+        self._set_update_button_available()
+        self._offer_application_update(result)
+
+    def _offer_application_update(self, result: updater.CompanionRelease) -> None:
         if not messagebox.askyesno(
             "Companion Update Available",
             f"GitHub release {result.tag} is available.\n\n"
@@ -4983,6 +5654,7 @@ class StarEmpireDesktop:
             "No game files or data archives are changed.",
             parent=self.root,
         ):
+            self._set_update_button_available()
             return
         self.update_button.configure(state="disabled", text="DOWNLOADING...")
         self._run_application_update_task(
@@ -5022,7 +5694,7 @@ class StarEmpireDesktop:
             "Star Empire Companion will now close. The verified update will replace this executable and reopen it.",
             parent=self.root,
         )
-        self.root.after(120, self._on_close)
+        self.root.after(120, self.close)
 
     def open_share_intel(self) -> None:
         """Open explicit, local-only controls for community observation bundles."""
@@ -5142,6 +5814,7 @@ class StarEmpireDesktop:
             self.apply_filters()
             if self.global_search_dialog and self.global_search_dialog.winfo_exists():
                 self._populate_global_search()
+            self._populate_system_extraction_archive()
             if meta.get("logExists"):
                 self.status_dot.configure(fg=MINT)
                 self.status_var.set(
@@ -6637,6 +7310,8 @@ class StarEmpireDesktop:
     def _show_map_system_context(self, event, name: str) -> str:
         self._select_map_canvas_system(name)
         menu = tk.Menu(self.root, tearoff=False, bg=PANEL_2, fg=TEXT, activebackground=PANEL_3, activeforeground=CYAN)
+        menu.add_command(label="ADD TO SYSTEM EXTRACTION", command=lambda: self._add_system_to_extraction(name))
+        menu.add_separator()
         menu.add_command(label="Organize System / Add Notes", command=lambda: self._organize_map_system(name))
         menu.add_command(label="Copy System Name", command=lambda: self._copy_text(name, f"Copied system name {name}"))
         try:
@@ -6743,14 +7418,16 @@ class StarEmpireDesktop:
         widget.configure(state="disabled")
         widget.yview_moveto(0)
 
-    def _render_map_system_detail(self, system: dict[str, Any]) -> None:
-        widget = self.map_detail_text
+    def _render_map_system_detail(self, system: dict[str, Any], widget: tk.Text | None = None) -> None:
+        widget = widget or self.map_detail_text
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         name = str(system.get("name") or "Unknown system")
         personal = self.user_state.record_annotation("system", system.get("id") or name)
         widget.insert("end", "SYSTEM\n", "section")
         widget.insert("end", name + "\n", "good")
+        widget.insert("end", "CURRENT EXTRACTION BASIS\n", "section")
+        widget.insert("end", "Everything below is calculated per 2h 0m Colony tick. Current output is only shown for bases recorded while you were docked.\n", "label")
         self._insert_pair(widget, "System ID", str(system.get("id") or "-"))
         self._insert_pair(widget, "Coordinates", f"{format_number(system.get('x'))}, {format_number(system.get('y'))}")
         self._insert_pair(widget, "Hazard", format_number(system.get("hazard"), "0"))
@@ -6776,76 +7453,78 @@ class StarEmpireDesktop:
             widget.insert("end", "No planet summary captured.\n", "label")
         self._insert_pair(widget, "Moons", format_number(system.get("moonCount"), "0"))
 
-        scanned_bodies = scans_for_system(self.data.get("scans"), name)
-        body_label = "BODY" if len(scanned_bodies) == 1 else "BODIES"
-        widget.insert("end", "\nSYSTEM EXTRACTOR SLOTS (USED / MAX · TIER MIX)\n", "section")
-        base_summary = system_extraction_base_summary(scanned_bodies)
+        known_bodies = scans_for_system(self.data.get("scans"), name)
+        scanned_bodies = [body for body in known_bodies if scan_is_completed(body)]
+        base_summary = system_extraction_base_summary(known_bodies)
         extractor_records = [
             record for record in self.data.get("privateExtractorUsage", [])
             if isinstance(record, dict)
             and str(record.get("systemName") or "").strip().casefold() == name.casefold()
         ]
-        observed_base_label = "BASE" if len(extractor_records) == 1 else "BASES"
+        body_entries = system_body_extraction_entries(
+            known_bodies,
+            extractor_records,
+            self.data.get("privateColonyEconomy", []),
+            self.data.get("items", []),
+            name,
+        )
+        widget.insert("end", "\nBODY EXTRACTION / 2H COLONY TICK\n", "section")
         widget.insert(
             "end",
-            f"{base_summary['bodies']} SCANNED {body_label} · {base_summary['maxBases']} MAX BASES "
+            f"{len(known_bodies)} KNOWN BODIES · {len(scanned_bodies)} SCANNED · {base_summary['maxBases']} MAX BASES "
             f"({base_summary['planetBodies']} PLANETS ×{MAX_EXTRACTION_BASES_PER_PLANET}, "
-            f"{base_summary['moonBodies']} MOONS ×{MAX_EXTRACTION_BASES_PER_MOON}) · "
-            f"{len(extractor_records)} OBSERVED {observed_base_label}\n",
+            f"{base_summary['moonBodies']} MOONS ×{MAX_EXTRACTION_BASES_PER_MOON}) · {len(extractor_records)} OBSERVED BASES\n",
             "label",
         )
-        widget.insert("end", "MAX IS BUILD CAPACITY; USED/TIERS ONLY REFLECT BASES YOU DOCKED AT.\n", "label")
-        if scanned_bodies:
-            max_slots = system_extractor_slot_capacities(scanned_bodies)
-            observed_slots = (
-                app.system_extractor_slots(extractor_records, name)
-                if extractor_records else None
-            )
-            observed_tiers = (
-                app.system_extractor_tier_counts(extractor_records, name)
-                if extractor_records else {}
-            )
-            capacity_entries = system_extraction_capacity_entries(
-                max_slots,
-                observed_slots,
-                observed_tiers,
-            )
-            if capacity_entries:
-                self._insert_system_extraction_entries(
-                    widget,
-                    capacity_entries,
-                )
-                if not extractor_records:
-                    widget.insert(
-                        "end",
-                        "Dock at a managed extraction base to record used slots locally.\n",
-                        "label",
-                    )
-            else:
-                widget.insert("end", "No recorded extraction yield in this system.\n", "label")
-        else:
-            widget.insert("end", "No planet resource scans captured here yet.\n", "label")
-
-        galaxy = self.data.get("map") or {}
-        connections = []
-        for edge in galaxy.get("edges", []):
-            if edge.get("source") == name:
-                connections.append(edge.get("target"))
-            elif edge.get("target") == name:
-                connections.append(edge.get("source"))
-        widget.insert("end", f"\nJUMP CONNECTIONS ({len(connections)})\n", "section")
-        widget.insert("end", "\n".join(f"• {connection}" for connection in sorted(connections, key=str.casefold)) + ("\n" if connections else "No connections captured.\n"), "value")
-        station_ids = set(system.get("stationIds") or [])
-        station_rows = [station for station in self.data.get("stations", []) if station.get("id") in station_ids]
-        widget.insert("end", f"\nKNOWN STATIONS ({len(station_rows)})\n", "section")
-        if station_rows:
-            for station in station_rows:
-                widget.insert("end", f"• {station.get('name')} — {station.get('itemCount', 0):,} shop items\n", "value")
-        else:
-            widget.insert("end", "No named station observations mapped here yet.\n", "label")
+        widget.insert("end", "Every planet and moon is listed. Unscanned bodies keep their name and type, but have no inferred resource capacity.\n", "label")
+        for body in body_entries:
+            widget.insert("end", "\n" + str(body["bodyName"]) + "\n", "good")
+            status = "SCANNED" if body.get("scanned") else "UNSCANNED"
+            max_bases = body.get("maxBases")
+            max_base_text = f" · {format_number(max_bases, '0')} MAX BASE{'S' if max_bases != 1 else ''}" if max_bases is not None else ""
+            widget.insert("end", f"  {body.get('bodyType') or 'Unknown'} · {status}{max_base_text}\n", "label")
+            capacities = body.get("capacityEntries") or []
+            if capacities:
+                widget.insert("end", "  MAX SCANNED SLOTS: ", "label")
+                for index, (resource, amount) in enumerate(capacities):
+                    if index:
+                        widget.insert("end", "  ·  ", "label")
+                    widget.insert("end", resource + " ", "good")
+                    widget.insert("end", format_number(amount), "value")
+                widget.insert("end", "\n", "value")
+            stations = body.get("stations") or []
+            if not stations:
+                widget.insert("end", "  No locally observed extraction base.\n", "label")
+                continue
+            for station in stations:
+                station_name = str(station.get("stationName") or "").strip()
+                station_id = str(station.get("stationId") or "").strip()
+                if station_name:
+                    widget.insert("end", "  BASE: " + station_name + "\n", "value")
+                else:
+                    widget.insert("end", "  BASE NAME NOT CAPTURED" + (f" (ID {station_id})" if station_id else "") + "\n", "warning")
+                tiers = station.get("tierEntries") or []
+                if tiers:
+                    widget.insert("end", "    EXTRACTOR TIERS: ", "label")
+                    for index, (resource, tier_summary) in enumerate(tiers):
+                        if index:
+                            widget.insert("end", "  ·  ", "label")
+                        widget.insert("end", resource + " ", "good")
+                        widget.insert("end", tier_summary, "value")
+                    widget.insert("end", "\n", "value")
+                output_entries = station.get("outputEntries") or []
+                if output_entries:
+                    widget.insert("end", "    CURRENT EXTRACTION / 2H TICK: ", "label")
+                    for index, (resource, amount) in enumerate(output_entries):
+                        if index:
+                            widget.insert("end", "  ·  ", "label")
+                        widget.insert("end", resource.replace("_", " ").title() + " ", "good")
+                        widget.insert("end", format_number(amount) + " / tick", "value")
+                    widget.insert("end", "\n", "value")
+                else:
+                    widget.insert("end", "    CURRENT EXTRACTION / 2H TICK: awaiting a recorded Colony tick or extractor Production stat.\n", "warning")
         widget.configure(state="disabled")
         widget.yview_moveto(0)
-
     def _render_map_station_detail(self, station: dict[str, Any]) -> None:
         widget = self.map_detail_text
         widget.configure(state="normal")
@@ -7379,7 +8058,7 @@ class StarEmpireDesktop:
         has_saved_layout = isinstance(saved_layouts, dict) and "scans" in saved_layouts
         layout = self.user_state.table_layout("scans")
         if has_saved_layout:
-            columns = [column for column in layout.get("columns", []) if column in SCAN_COLUMN_SPECS]
+            columns = scan_restored_layout_columns(layout.get("columns", []))
             if columns:
                 self.scan_display_order = columns
                 selected = set(columns)
@@ -7576,6 +8255,35 @@ class StarEmpireDesktop:
         self.root.clipboard_append("\n".join(lines))
         self.status_var.set(f"Copied planet details for {scan.get('planet_name') or 'planet'}")
 
+    def _scan_resource_matrix_rows_for_export(self) -> list[list[str]]:
+        rows = [
+            (
+                scan,
+                annotation,
+                self.user_state.record_annotation("planet", scan_annotation_key(scan)),
+            )
+            for scan, annotation in getattr(self, "scan_filtered_rows", [])
+        ]
+        return scan_resource_matrix_export_rows(rows)
+
+    def _export_scan_resource_matrix(self) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Export Planet Resource Matrix",
+            defaultextension=".csv",
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            initialfile="star-empire-planet-resources.csv",
+        )
+        if not path:
+            return
+        try:
+            with Path(path).open("w", encoding="utf-8-sig", newline="") as handle:
+                csv.writer(handle).writerows(self._scan_resource_matrix_rows_for_export())
+        except OSError as error:
+            messagebox.showerror("Could not export planet resources", str(error), parent=self.root)
+            return
+        self.status_var.set(f"Exported planet resource matrix to {path}")
+
     def _populate_scans(self) -> None:
         scans = [scan for scan in self.data.get("scans", []) if isinstance(scan, dict)]
         previous = self.scan_tree.selection()
@@ -7627,6 +8335,7 @@ class StarEmpireDesktop:
             filtered.append((scan, annotation))
 
         filtered = self._sort_scan_rows(filtered)
+        self.scan_filtered_rows = filtered
         self.scan_tree.delete(*self.scan_tree.get_children())
         for scan, annotation in filtered:
             personal = self.user_state.record_annotation("planet", scan_annotation_key(scan))
@@ -7664,7 +8373,7 @@ class StarEmpireDesktop:
             self._set_text(self.scan_text, "Adjust the search or filters, or scan a planet in game and select Refresh Data.")
 
     def _scan_quality_order(self, label: str) -> int:
-        order = {"Exceptional": 0, "Strong": 1, "Viable": 2, "Difficult": 3, "Hostile": 4, "Unknown": 5}
+        order = {"Exceptional": 0, "Strong": 1, "Viable": 2, "Difficult": 3, "Hostile": 4, "Unscanned": 5, "Unknown": 6}
         return order.get(label, 99)
 
     def _scan_quality(self, scan: dict[str, Any]) -> tuple[str, float | None]:
@@ -7762,6 +8471,7 @@ class StarEmpireDesktop:
         annotation = self.user_state.scan_annotation(scan)
         personal = self.user_state.record_annotation("planet", scan_annotation_key(scan))
         quality_label, quality_index = self._scan_quality(scan)
+        is_scanned = scan_is_completed(scan)
         personal_flags = ""
         if personal.get("favorite"):
             personal_flags += "  ·  ★"
@@ -7807,6 +8517,18 @@ class StarEmpireDesktop:
         self._insert_pair(self.scan_text, "System", system_name or "Location unknown")
         self._insert_pair(self.scan_text, "Base record", f"Yes · {annotation.get('baseCount', 0)} base(s)" if annotation.get("hasBase") else "No base recorded")
 
+        if not is_scanned:
+            self.scan_text.insert("end", "\nOBSERVATION STATUS\n", "section")
+            self.scan_text.insert("end", "UNSCANNED — body identity was captured when this system was entered. Scan it normally in game to reveal colony, resource, and extractor data.\n", "warning")
+            self.scan_text.insert("end", "\nBODY METADATA\n", "section")
+            self._insert_pair(self.scan_text, "Body type", str(scan.get("planet_type") or "Unknown"))
+            self._insert_pair(self.scan_text, "Moon", "Yes" if scan_is_moon(scan) else "No")
+            self._insert_pair(self.scan_text, "Planet ID", str(scan.get("planet_id") or "-"))
+            self._insert_pair(self.scan_text, "Last seen", str(scan.get("observedAt") or "Unknown"))
+            self.scan_text.configure(state="disabled")
+            self.scan_text.yview_moveto(0)
+            return
+
         self.scan_text.insert("end", "\nCOLONY SUITABILITY\n", "section")
         score_text = f"{quality_index:.1f} / 100" if quality_index is not None else "Not reported"
         self._insert_pair(self.scan_text, "Rating", f"{quality_label} · {score_text}")
@@ -7841,13 +8563,6 @@ class StarEmpireDesktop:
         else:
             self.scan_text.insert("end", "No positive resource yields reported.\n", "label")
 
-        self.scan_text.insert("end", "\nRECOMMENDED EXTRACTORS\n", "section")
-        extractors = scan.get("extractors") if isinstance(scan.get("extractors"), dict) else {}
-        if extractors:
-            for extractor_name, value in sorted(extractors.items(), key=lambda pair: (-float(pair[1] or 0), str(pair[0]).casefold())):
-                self._insert_pair(self.scan_text, str(extractor_name).replace("_", " ").title(), format_number(value))
-        else:
-            self.scan_text.insert("end", "No extractor recommendations captured.\n", "label")
 
         self.scan_text.insert("end", "\nSCAN METADATA\n", "section")
         self._insert_pair(self.scan_text, "Planet type", str(scan.get("planet_type") or "Unknown"))
@@ -9246,6 +9961,86 @@ class StarEmpireDesktop:
                 widget.insert("end", "  OBSERVED TIERS: ", "label")
                 widget.insert("end", tier_summary + "\n", "value")
 
+    def _insert_colony_economy_entries(
+        self,
+        widget: tk.Text,
+        entries: list[dict[str, Any]],
+    ) -> None:
+        """Render equipped full-load capacity and conservative per-base Colony support."""
+        if not entries:
+            widget.insert("end", "Dock at a managed extraction base to record its modules locally.\n", "label")
+            return
+        for index, entry in enumerate(entries):
+            if index:
+                widget.insert("end", "\n", "value")
+            widget.insert("end", str(entry["stationName"]) + "\n", "good")
+            tick_seconds = entry.get("tickIntervalSeconds")
+            if tick_seconds is not None:
+                tick_label = "  LAST OBSERVED SERVER TICK: " if entry.get("usesSharedTick") else "  SERVER TICK: "
+                widget.insert("end", tick_label, "label")
+                widget.insert("end", self._format_duration(tick_seconds) + "\n", "value")
+            output_entries = entry.get("outputEntries") or []
+            if output_entries:
+                widget.insert("end", "  EQUIPPED OUTPUT CAPACITY: ", "label")
+                for resource_index, (resource, amount) in enumerate(output_entries):
+                    if resource_index:
+                        widget.insert("end", "  ·  ", "label")
+                    widget.insert("end", resource.replace("_", " ").title() + " ", "good")
+                    widget.insert("end", format_number(amount) + " / tick", "value")
+                widget.insert("end", "\n", "value")
+            else:
+                per_day_entries = entry.get("outputPerDayEntries") or []
+                if per_day_entries:
+                    widget.insert("end", "  EQUIPPED OUTPUT / DAY: ", "label")
+                    for resource_index, (resource, amount) in enumerate(per_day_entries):
+                        if resource_index:
+                            widget.insert("end", "  ·  ", "label")
+                        widget.insert("end", resource.replace("_", " ").title() + " ", "good")
+                        widget.insert("end", format_number(amount), "value")
+                    widget.insert("end", "\n", "value")
+                else:
+                    widget.insert("end", "  No matching production recipe is logged for the equipped modules yet.\n", "warning")
+            input_entries = entry.get("inputEntries") or []
+            if input_entries:
+                widget.insert("end", "  PROCESSING INPUTS: ", "label")
+                for resource_index, (resource, amount) in enumerate(input_entries):
+                    if resource_index:
+                        widget.insert("end", "  ·  ", "label")
+                    widget.insert("end", resource.replace("_", " ").title() + " ", "good")
+                    widget.insert("end", format_number(amount) + " / tick", "value")
+                widget.insert("end", "\n", "value")
+            credit_cost = entry.get("creditCostPerTick")
+            if isinstance(credit_cost, (int, float)) and math.isfinite(float(credit_cost)) and credit_cost > 0:
+                widget.insert("end", "  PROCESSING CREDIT COST: ", "label")
+                widget.insert("end", format_number(credit_cost) + " cr / tick\n", "warning")
+            if not entry.get("hasColonyData"):
+                widget.insert("end", "  Open the normal in-game Colony tab here once for this base's support and population estimate.\n", "label")
+                continue
+            estimate = entry.get("estimate") or {}
+            supported = estimate.get("supportedPopulation")
+            if supported is None:
+                widget.insert("end", "  EQUIPPED-CAPACITY SUPPORT: ", "label")
+                widget.insert("end", "INCOMPLETE\n", "warning")
+                missing = estimate.get("missingResources") or []
+                if missing:
+                    widget.insert("end", "  MISSING EQUIPPED OUTPUT: ", "label")
+                    widget.insert("end", ", ".join(str(resource).replace("_", " ").title() for resource in missing) + "\n", "value")
+                widget.insert("end", "  Full-load processing assumes its listed inputs and credits are available.\n", "label")
+                continue
+            widget.insert("end", "  EQUIPPED-CAPACITY SUPPORT: ", "label")
+            widget.insert("end", f"{format_number(supported)} population\n", "good")
+            limiting = estimate.get("limitingResources") or []
+            if limiting:
+                widget.insert("end", "  LIMITING RESOURCE: ", "label")
+                widget.insert("end", ", ".join(str(resource).replace("_", " ").title() for resource in limiting) + "\n", "value")
+            try:
+                population = float(entry.get("population"))
+            except (TypeError, ValueError):
+                population = None
+            if population is not None and population >= 0:
+                delta = float(supported) - population
+                label = "ESTIMATED HEADROOM" if delta >= 0 else "ESTIMATED SHORTFALL"
+                widget.insert("end", f"  CURRENT POPULATION: {format_number(population)} · {label}: {format_number(abs(delta))}\n", "value")
     def _format_detail_value(self, value: Any) -> str:
         if isinstance(value, dict):
             return ", ".join(f"{key}: {format_number(item)}" for key, item in value.items())

@@ -21,7 +21,7 @@ except ImportError:  # Source-only environments can still inspect/patch protocol
     CArchiveWriter = None
 
 
-PATCH_VERSION = 7
+PATCH_VERSION = 10
 SOURCE_RELATIVE = Path("_internal") / "protocol.py"
 TARGET_RELATIVE = Path("Client.exe")
 
@@ -92,9 +92,11 @@ SNAPSHOT_HOOKS = {
 
 REQUIRED_METHODS = (
     "_route_game_line",
+    "_on_solar_system_data",
     "_on_planet_scan_result",
     "_on_player_station_dock_ok",
     "_on_ps_station_cargo",
+    "_on_colony_data",
     *HOOKS.keys(),
     *SNAPSHOT_HOOKS.keys(),
 )
@@ -231,6 +233,55 @@ SCAN_BLOCK = '''        # STAR_EMPIRE_ARCHIVE_LOGGER_V1: passive planet scan cap
         )
 '''
 
+SYSTEM_BODY_ROSTER_HELPER = '''    # STAR_EMPIRE_ARCHIVE_LOGGER_V8: passive system body roster capture
+    def _log_system_body_roster(self, layout: dict) -> None:
+        """Log the safe, already-delivered normal-system body roster.
+
+        This deliberately copies only the identity and classification fields
+        needed for Companion's unscanned-body rows. It never logs the full
+        solar layout, asks the server for data, or runs in dungeon layouts.
+        """
+        if not isinstance(layout, dict) or layout.get("is_dungeon"):
+            return
+        try:
+            system_id = str(layout.get("system_id") or "").strip()
+            system_name = str(layout.get("system_name") or "").strip()
+            if not system_id and not system_name:
+                return
+            bodies = []
+            for raw_body in layout.get("planets", []):
+                if not isinstance(raw_body, dict):
+                    continue
+                body_id = str(raw_body.get("id") or "").strip()
+                body_name = str(raw_body.get("name") or "").strip()
+                if not body_id or not body_name:
+                    continue
+                is_moon = bool(raw_body.get("is_moon"))
+                body_type = str(raw_body.get("planet_type") or "").strip()
+                if not body_type:
+                    body_type = "Moon" if is_moon else "Unknown"
+                bodies.append({
+                    "planet_id": body_id,
+                    "planet_name": body_name,
+                    "planet_type": body_type,
+                    "is_moon": is_moon,
+                })
+            if bodies:
+                self._log_archive_snapshot("SYSTEM_BODY_ROSTER", {
+                    "system_id": system_id,
+                    "system_name": system_name,
+                    "bodies": bodies,
+                })
+        except Exception:
+            # Companion diagnostics must never interfere with normal gameplay.
+            logger.exception("System body roster capture failed")
+
+'''
+
+SYSTEM_BODY_ROSTER_BLOCK = '''        # STAR_EMPIRE_ARCHIVE_LOGGER_V8: passive normal-system roster only.
+        self._log_system_body_roster(self._solar_layout)
+'''
+
 SNAPSHOT_HELPER = '''    # STAR_EMPIRE_ARCHIVE_LOGGER_V2: passive player and ship capture
     def _log_archive_snapshot(self, marker: str, data) -> None:
         """Log a payload that the server already delivered to this client.
@@ -262,9 +313,9 @@ SNAPSHOT_HELPER = '''    # STAR_EMPIRE_ARCHIVE_LOGGER_V2: passive player and shi
 
 '''
 
-STATION_EXTRACTOR_HELPER = '''    # STAR_EMPIRE_ARCHIVE_LOGGER_V7: passive docked extractor capture
+STATION_EXTRACTOR_HELPER = '''    # STAR_EMPIRE_ARCHIVE_LOGGER_V11: passive docked production-module capture
     def _log_station_extractor_snapshot(self, data: dict) -> None:
-        """Log only resource-extractor counts from an authorised station dock.
+        """Log known resource and processor module counts from an authorised dock.
 
         The dock handler supplies the station and planet context. The normal
         PS_STATION_CARGO response then supplies already-delivered equipped
@@ -277,18 +328,18 @@ STATION_EXTRACTOR_HELPER = '''    # STAR_EMPIRE_ARCHIVE_LOGGER_V7: passive docke
             raw_counts = data.get("equipped_module_counts")
             if not isinstance(raw_counts, dict):
                 return
-            extractor_types = {
+            production_module_types = {
                 "metal_drill", "advanced_metal_drill", "industrial_metal_drill",
                 "silicon_drill", "advanced_silicon_drill", "industrial_silicon_drill",
                 "copper_extractor", "titanium_extractor", "gold_extractor",
                 "oil_drill", "wood_cutter", "advanced_wood_cutter",
                 "industrial_wood_cutter", "harvester", "advanced_harvester",
-                "industrial_harvester",
+                "industrial_harvester", "furniture_factory", "metal_foundry", "microchip_fabricator", "ration_processor",
             }
             equipped = {}
             for module_type, quantity in raw_counts.items():
                 module_key = str(module_type or "").strip()
-                if module_key not in extractor_types:
+                if module_key not in production_module_types:
                     continue
                 try:
                     count = int(quantity)
@@ -335,6 +386,70 @@ STATION_EXTRACTOR_SNAPSHOT_BLOCK = '''        # STAR_EMPIRE_ARCHIVE_LOGGER_V7: p
         self._log_station_extractor_snapshot(data)
 '''
 
+
+COLONY_ECONOMY_HELPER = '''    # STAR_EMPIRE_ARCHIVE_LOGGER_V10: passive Colony-tab economy capture
+    def _log_colony_economy_snapshot(self, data: dict) -> None:
+        """Log the minimal values already delivered to the normal Colony tab.
+
+        This copies station identity, current population, server tick duration,
+        and baseline per-capita basket only. It never sends a request and
+        deliberately excludes prices, reserves, cargo, and other account data.
+        """
+        if not isinstance(data, dict):
+            return
+        try:
+            colony = data.get("colony")
+            raw_basket = data.get("basket")
+            if not isinstance(colony, dict) or not isinstance(raw_basket, list):
+                return
+            try:
+                tick_seconds = float(data.get("tick_interval_seconds"))
+            except (TypeError, ValueError):
+                return
+            if tick_seconds <= 0:
+                return
+            context = getattr(self, "_sec_station_extractor_context", {})
+            if not isinstance(context, dict):
+                context = {}
+            station_id = str(data.get("station_id") or context.get("station_id") or "").strip()
+            system_name = str(data.get("system_name") or context.get("system_name") or "").strip()
+            if not station_id or not system_name:
+                return
+            basket = []
+            seen_resources = set()
+            for raw_entry in raw_basket:
+                if not isinstance(raw_entry, dict):
+                    continue
+                resource = str(raw_entry.get("resource") or "").strip()
+                try:
+                    per_capita = float(raw_entry.get("per_capita"))
+                except (TypeError, ValueError):
+                    continue
+                if not resource or resource in seen_resources or per_capita <= 0:
+                    continue
+                basket.append({"resource": resource, "per_capita": per_capita})
+                seen_resources.add(resource)
+            if not basket:
+                return
+            self._log_archive_snapshot("COLONY_ECONOMY_SNAPSHOT", {
+                "station_id": station_id,
+                "station_name": str(data.get("station_name") or context.get("station_name") or "").strip(),
+                "system_name": system_name,
+                "planet_id": str(data.get("planet_id") or context.get("planet_id") or "").strip(),
+                "planet_name": str(data.get("planet_name") or context.get("planet_name") or "").strip(),
+                "tick_interval_seconds": tick_seconds,
+                "population": colony.get("population"),
+                "basket": basket,
+            })
+        except Exception:
+            # Companion diagnostics must never interfere with normal gameplay.
+            logger.exception("Colony economy capture failed")
+
+'''
+
+COLONY_ECONOMY_SNAPSHOT_BLOCK = '''        # STAR_EMPIRE_ARCHIVE_LOGGER_V10: passive Colony-tab response only.
+        self._log_colony_economy_snapshot(data)
+'''
 
 @dataclass(frozen=True)
 class PatchInspection:
@@ -532,7 +647,22 @@ def _embedded_part_presence(executable: Path) -> dict[str, bool]:
                 "equipped_module_counts",
             )
         ),
+        "system body roster": all(
+            marker in strings
+            for marker in (
+                "SYSTEM_BODY_ROSTER",
+                "System body roster capture failed",
+            )
+        ),
         "login panel layout compatibility": _embedded_panel_layout_compatible(executable),
+        "colony economy capture": all(
+            marker in strings
+            for marker in (
+                "COLONY_ECONOMY_SNAPSHOT",
+                "Colony economy capture failed",
+                "tick_interval_seconds",
+            )
+        ),
     }
     for source in HOOKS.values():
         parts[source] = source in strings
@@ -685,6 +815,15 @@ def _part_presence(text: str) -> dict[str, bool]:
             )
         ),
         "planet scan": '"PLANET_SCAN_RESULT %s"' in text,
+        "system body roster": all(
+            marker in text
+            for marker in (
+                "def _log_system_body_roster(",
+                '"SYSTEM_BODY_ROSTER"',
+                "self._log_system_body_roster(self._solar_layout)",
+                'logger.exception("System body roster capture failed")',
+            )
+        ),
         "snapshot helper": all(
             marker in text
             for marker in (
@@ -701,6 +840,15 @@ def _part_presence(text: str) -> dict[str, bool]:
                 'logger.exception("Station extractor capture failed")',
                 "self._sec_station_extractor_context = {",
                 "self._log_station_extractor_snapshot(data)",
+            )
+        ),
+        "colony economy capture": all(
+            marker in text
+            for marker in (
+                "def _log_colony_economy_snapshot(",
+                '"COLONY_ECONOMY_SNAPSHOT"',
+                'logger.exception("Colony economy capture failed")',
+                "self._log_colony_economy_snapshot(data)",
             )
         ),
     }
@@ -761,6 +909,14 @@ def inspect_text(text: str, target: Path = Path("protocol.py")) -> PatchInspecti
             target,
         )
 
+    colony_helper_exists = "def _log_colony_economy_snapshot(" in text
+    colony_capture_complete = _part_presence(text)["colony economy capture"]
+    if colony_helper_exists and not colony_capture_complete:
+        return PatchInspection(
+            "incompatible",
+            "An unfamiliar partial colony economy logger already exists; automatic repair was refused.",
+            target,
+        )
     parts = _part_presence(text)
     installed = tuple(name for name, present in parts.items() if present)
     missing = tuple(name for name, present in parts.items() if not present)
@@ -883,6 +1039,20 @@ def patch_protocol_text(text: str) -> str:
             raise PatchError("ProtocolMixin class body could not be located safely.")
         candidate = candidate[: line_end + 1] + SNAPSHOT_HELPER + candidate[line_end + 1 :]
 
+    if not parts["system body roster"]:
+        class_anchor = "class ProtocolMixin:"
+        class_index = candidate.index(class_anchor) + len(class_anchor)
+        line_end = candidate.find("\n", class_index)
+        if line_end < 0:
+            raise PatchError("ProtocolMixin class body could not be located safely.")
+        candidate = candidate[: line_end + 1] + SYSTEM_BODY_ROSTER_HELPER + candidate[line_end + 1 :]
+        candidate = _insert_before_in_method(
+            candidate,
+            "_on_solar_system_data",
+            "        # Raw on-the-wire size of this layout, in bytes.",
+            SYSTEM_BODY_ROSTER_BLOCK,
+        )
+
     if not parts["station extractor capture"]:
         class_anchor = "class ProtocolMixin:"
         class_index = candidate.index(class_anchor) + len(class_anchor)
@@ -903,6 +1073,19 @@ def patch_protocol_text(text: str) -> str:
             STATION_EXTRACTOR_SNAPSHOT_BLOCK,
         )
 
+    if not parts["colony economy capture"]:
+        class_anchor = "class ProtocolMixin:"
+        class_index = candidate.index(class_anchor) + len(class_anchor)
+        line_end = candidate.find("\n", class_index)
+        if line_end < 0:
+            raise PatchError("ProtocolMixin class body could not be located safely.")
+        candidate = candidate[: line_end + 1] + COLONY_ECONOMY_HELPER + candidate[line_end + 1 :]
+        candidate = _insert_before_in_method(
+            candidate,
+            "_on_colony_data",
+            "        if self._solar_window is not None:",
+            COLONY_ECONOMY_SNAPSHOT_BLOCK,
+        )
     if not parts["planet scan"]:
         candidate = _insert_before_in_method(
             candidate,
